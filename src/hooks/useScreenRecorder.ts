@@ -1378,8 +1378,37 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			const platform = await window.electronAPI.getPlatform();
 			hideEditorOverlayCursorByDefault.current = false;
 			const existingSource = await window.electronAPI.getSelectedSource();
-			const selectedSource =
-				existingSource ?? (platform === "linux" ? LINUX_PORTAL_SOURCE : null);
+			let linuxWindowSystem: "wayland" | "x11" | null = null;
+			let selectedSource = existingSource;
+			if (!selectedSource && platform === "linux") {
+				const getLinuxWindowSystem = window.electronAPI.getLinuxWindowSystem;
+				linuxWindowSystem = getLinuxWindowSystem
+					? await getLinuxWindowSystem().catch(() => null)
+					: null;
+
+				if (linuxWindowSystem === "wayland") {
+					selectedSource = LINUX_PORTAL_SOURCE;
+				} else {
+					const sources = await window.electronAPI
+						.getSources({
+							types: ["screen"],
+							thumbnailSize: { width: 1, height: 1 },
+							fetchWindowIcons: false,
+						})
+						.catch((error) => {
+							console.warn("Failed to load a default Linux screen source:", error);
+							return [];
+						});
+
+					selectedSource =
+						sources.find(
+							(source) =>
+								source.sourceType === "screen" || source.id?.startsWith("screen:"),
+						) ??
+						sources[0] ??
+						null;
+				}
+			}
 			if (!selectedSource) {
 				alert("Please select a source to record");
 				return;
@@ -1387,7 +1416,11 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			// Persist the synthetic Linux portal sentinel to main so that the
 			// setDisplayMediaRequestHandler can short-circuit getSources() and
 			// avoid triggering an extra portal dialog.
-			if (!existingSource && selectedSource.id === "screen:linux-portal") {
+			if (
+				!existingSource &&
+				linuxWindowSystem === "wayland" &&
+				selectedSource.id === "screen:linux-portal"
+			) {
 				try {
 					await window.electronAPI.selectSource(selectedSource);
 				} catch (err) {

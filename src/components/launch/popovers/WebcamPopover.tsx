@@ -90,10 +90,10 @@ export function WebcamPopover({
 			)}
 			{showWebcamControls && (
 				<div className="flex justify-center px-3 py-2">
-					<div className="h-24 w-24 overflow-hidden rounded-2xl bg-[var(--launch-hover)] ring-1 ring-[var(--launch-border-strong)]">
+					<div className="aspect-video w-36 overflow-hidden rounded-2xl bg-black ring-1 ring-[var(--launch-border-strong)]">
 						<video
 							ref={setWebcamPreviewNode}
-							className="h-full w-full object-cover"
+							className="h-full w-full object-contain bg-black"
 							muted
 							playsInline
 							style={{ transform: "scaleX(-1)" }}

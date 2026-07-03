@@ -73,6 +73,25 @@ export function registerSettingsHandlers() {
 		return process.platform;
 	});
 
+	ipcMain.handle("get-linux-window-system", () => {
+		if (process.platform !== "linux") {
+			return null;
+		}
+
+		const sessionType = process.env.XDG_SESSION_TYPE?.trim().toLowerCase();
+		if (sessionType === "wayland" || sessionType === "x11") {
+			return sessionType;
+		}
+		if (process.env.WAYLAND_DISPLAY) {
+			return "wayland";
+		}
+		if (process.env.DISPLAY) {
+			return "x11";
+		}
+
+		return null;
+	});
+
 	ipcMain.on("app-settings:get", (event, key: unknown) => {
 		try {
 			if (typeof key !== "string" || key.length === 0) {

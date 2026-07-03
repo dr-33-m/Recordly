@@ -25,6 +25,7 @@ import {
 	killWindowsCaptureProcess,
 	registerIpcHandlers,
 } from "./ipc/handlers";
+import { shouldUseSyntheticLinuxPortalSource } from "./ipc/register/sourceMapping";
 import { ensureMediaServer } from "./mediaServer";
 import { ensurePackagedRendererServer } from "./rendererServer";
 import type { UpdateToastPayload } from "./updater";
@@ -74,12 +75,9 @@ app.commandLine.appendSwitch("enable-unsafe-webgpu");
 app.commandLine.appendSwitch("enable-gpu-rasterization");
 
 function configureGpuAccelerationSwitches() {
-	const { useAngle, useGl, disableFeatures } = getGpuSwitches(process.platform, process.env);
+	const { useAngle, disableFeatures } = getGpuSwitches(process.platform);
 	if (useAngle) {
 		app.commandLine.appendSwitch("use-angle", useAngle);
-	}
-	if (useGl) {
-		app.commandLine.appendSwitch("use-gl", useGl);
 	}
 	if (disableFeatures && disableFeatures.length > 0) {
 		app.commandLine.appendSwitch("disable-features", disableFeatures.join(","));
@@ -1014,12 +1012,17 @@ app.whenReady().then(async () => {
 			// is set we skip getSources entirely and hand back a synthetic
 			// source id; Chromium then opens the portal once to actually
 			// resolve the capture.
-			// Default to the sentinel on Linux when no source has been
+			// Default to the sentinel on Linux/Wayland when no source has been
 			// pre-selected (e.g. fresh session where the renderer skipped the
 			// source picker entirely). This avoids calling getSources() which
 			// would itself trigger an extra portal dialog.
-			const isLinuxPortalSentinel =
-				process.platform === "linux" && (sourceId === "screen:linux-portal" || !sourceId);
+			// X11 needs a real desktopCapturer source id; a synthetic portal id
+			// fails there with "Could not find video source".
+			const isLinuxPortalSentinel = shouldUseSyntheticLinuxPortalSource({
+				env: process.env,
+				platform: process.platform,
+				sourceId,
+			});
 			if (isLinuxPortalSentinel) {
 				callback({ video: { id: "screen:0:0", name: "Entire screen" } });
 				return;

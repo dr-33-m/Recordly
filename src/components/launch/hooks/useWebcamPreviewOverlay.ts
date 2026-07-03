@@ -222,13 +222,15 @@ export function useWebcamPreviewOverlay({
 					video: webcamDeviceId
 						? {
 								deviceId: { exact: webcamDeviceId },
-								width: { ideal: 320 },
-								height: { ideal: 320 },
+								width: { ideal: 640 },
+								height: { ideal: 360 },
+								aspectRatio: { ideal: 16 / 9 },
 								frameRate: { ideal: 24, max: 30 },
 						  }
 						: {
-								width: { ideal: 320 },
-								height: { ideal: 320 },
+								width: { ideal: 640 },
+								height: { ideal: 360 },
+								aspectRatio: { ideal: 16 / 9 },
 								frameRate: { ideal: 24, max: 30 },
 						  },
 					audio: false,
