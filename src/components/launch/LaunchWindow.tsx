@@ -23,6 +23,7 @@ import { Button } from "../ui/button";
 import { HudInteractionContext } from "./contexts/HudInteractionContext";
 import { canToggleFloatingWebcamPreview } from "./floatingWebcamPreview";
 import { useHudBarDrag } from "./hooks/useHudBarDrag";
+import { useHudWindowDrag } from "./hooks/useHudWindowDrag";
 import { useLaunchHudInteractionState } from "./hooks/useLaunchHudInteractionState";
 import { useLaunchWindowActions } from "./hooks/useLaunchWindowActions";
 import { useLaunchWindowSystemState } from "./hooks/useLaunchWindowSystemState";
@@ -165,6 +166,9 @@ function LaunchWindowContent() {
 		hudBarRef,
 		recordingWebcamPreviewContainerRef,
 	});
+
+	const { handleWindowDragPointerDown, handleWindowDragPointerMove, handleWindowDragPointerUp } =
+		useHudWindowDrag();
 
 	const { handleHudMouseEnter, handleHudMouseLeave, beginInteractiveHudAction } =
 		useLaunchHudInteractionState({
@@ -426,8 +430,12 @@ function LaunchWindowContent() {
 	);
 
 	const hudMode = finalizing ? "finalizing" : recording ? "recording" : "idle";
-	const useNativeHudBarDrag =
-		platform === "linux" || hudOverlayMousePassthroughSupported === false;
+	// Linux drags the whole HUD window via the hud-overlay-drag IPC (compositors
+	// don't reliably honour -webkit-app-region: drag for this frameless overlay).
+	// The non-passthrough Windows fallback still uses -webkit-app-region, and
+	// passthrough platforms translate the bar inside the full-screen window.
+	const useManualWindowDrag = platform === "linux";
+	const useAppRegionDrag = !useManualWindowDrag && hudOverlayMousePassthroughSupported === false;
 
 	return (
 		<HudInteractionContext.Provider
@@ -459,18 +467,29 @@ function LaunchWindowContent() {
 								className={`${styles.bar} launch-theme mb-2`}
 							>
 								<div
-									// Linux compositors and non-passthrough Windows fallback windows
-									// need native window dragging; the JS drag path only translates
-									// content inside the HUD window.
-									className={`flex items-center px-0.5 cursor-grab active:cursor-grabbing ${
-										useNativeHudBarDrag ? styles.electronDrag : ""
+									// Exactly one drag mechanism may be bound here: pointer events
+									// never fire on a -webkit-app-region: drag element, and binding
+									// JS handlers alongside it causes missed grabs.
+									className={`flex items-center px-1 py-1 cursor-grab active:cursor-grabbing ${
+										useAppRegionDrag ? styles.electronDrag : ""
 									}`}
-									onPointerDown={handleHudBarPointerDown}
-									onPointerMove={handleHudBarPointerMove}
-									onPointerUp={handleHudBarPointerUp}
-									onPointerCancel={handleHudBarPointerUp}
+									{...(useManualWindowDrag
+										? {
+												onPointerDown: handleWindowDragPointerDown,
+												onPointerMove: handleWindowDragPointerMove,
+												onPointerUp: handleWindowDragPointerUp,
+												onPointerCancel: handleWindowDragPointerUp,
+											}
+										: useAppRegionDrag
+											? {}
+											: {
+													onPointerDown: handleHudBarPointerDown,
+													onPointerMove: handleHudBarPointerMove,
+													onPointerUp: handleHudBarPointerUp,
+													onPointerCancel: handleHudBarPointerUp,
+												})}
 								>
-									<RxDragHandleDots2 size={14} className="text-[#6b6b78]" />
+									<RxDragHandleDots2 size={16} className="text-[#6b6b78]" />
 								</div>
 
 								<div className={styles.barStateViewport}>

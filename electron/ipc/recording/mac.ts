@@ -1,5 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { BrowserWindow } from "electron";
 import {
 	persistPendingCursorTelemetry,
@@ -219,13 +220,22 @@ export async function finalizeStoredVideo(videoPath: string) {
 		throw error;
 	}
 
-	snapshotCursorTelemetryForPersistence();
-	setCurrentVideoPath(videoPath);
-	setCurrentProjectPath(null);
-	try {
-		await persistPendingCursorTelemetry(videoPath);
-	} catch (error) {
-		console.warn("[mac-stop] Failed to persist cursor telemetry:", error);
+	// Webcam companion videos ("recording-<ts>-webcam.<ext>") are stored through
+	// this same finalize path as the screen recording, and the two store calls
+	// race on stop. The companion must not become the current video or consume
+	// the pending cursor telemetry — otherwise, when it lands first, the
+	// telemetry sidecar is written next to the webcam file and the buffer is
+	// cleared, leaving the screen recording with no cursor data.
+	const isWebcamCompanionVideo = /-webcam\.(mp4|mov|webm)$/i.test(path.basename(videoPath));
+	if (!isWebcamCompanionVideo) {
+		snapshotCursorTelemetryForPersistence();
+		setCurrentVideoPath(videoPath);
+		setCurrentProjectPath(null);
+		try {
+			await persistPendingCursorTelemetry(videoPath);
+		} catch (error) {
+			console.warn("[mac-stop] Failed to persist cursor telemetry:", error);
+		}
 	}
 	if (isAutoRecordingPath(videoPath)) {
 		await pruneAutoRecordings([videoPath]);

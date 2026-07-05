@@ -89,6 +89,7 @@ import {
 	renderAnnotations,
 	renderAnnotationToCanvas,
 } from "./annotationRenderer";
+import { normalizeLightningRuntimePlatform } from "./backendPolicy";
 import { ForwardFrameSource } from "./forwardFrameSource";
 import { resolveMediaElementSource } from "./localMediaSource";
 import {
@@ -698,14 +699,23 @@ export class FrameRenderer {
 		};
 
 		const preferredRenderBackend = this.config.preferredRenderBackend;
+		// Linux WebGPU (Dawn/Vulkan) can initialize successfully but still crash
+		// mid-export inside pixi's bind-group setup ("reading '_resourceType'") on
+		// common driver stacks, so auto mode prefers the mature WebGL path there.
+		// An explicit webgpu preference is still honoured.
+		const autoPrefersWebgl =
+			typeof navigator !== "undefined" &&
+			normalizeLightningRuntimePlatform(navigator.platform || navigator.userAgent) === "linux";
 		const backendOrder: ExportRenderBackend[] =
 			preferredRenderBackend === "webgl"
 				? ["webgl", "webgpu"]
 				: preferredRenderBackend === "webgpu"
 					? ["webgpu", "webgl"]
-					: typeof navigator !== "undefined" && "gpu" in navigator
-						? ["webgpu", "webgl"]
-						: ["webgl"];
+					: autoPrefersWebgl
+						? ["webgl", "webgpu"]
+						: typeof navigator !== "undefined" && "gpu" in navigator
+							? ["webgpu", "webgl"]
+							: ["webgl"];
 		const failures: PixiRendererAttempt[] = [];
 
 		for (const backend of backendOrder) {

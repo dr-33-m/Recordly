@@ -335,16 +335,37 @@ let hudDragOffset: { x: number; y: number } | null = null;
 let hudDragLastCursor: { x: number; y: number } | null = null;
 let hudDragFixedSize: { width: number; height: number } | null = null;
 
+// True only when Electron itself runs on the native Wayland backend. This app
+// never sets ozone flags, so Electron defaults to X11 (XWayland inside a
+// Wayland session), where programmatic window placement via setBounds works.
+// Only a user-forced native-Wayland run (ELECTRON_OZONE_PLATFORM_HINT) has
+// compositor-controlled placement where setBounds x/y is silently ignored.
+function isElectronNativeWayland(): boolean {
+	if (process.platform !== "linux") {
+		return false;
+	}
+
+	const hint = process.env.ELECTRON_OZONE_PLATFORM_HINT?.trim().toLowerCase();
+	if (hint === "wayland") {
+		return true;
+	}
+	if (hint === "auto") {
+		return Boolean(process.env.WAYLAND_DISPLAY);
+	}
+
+	return false;
+}
+
 ipcMain.on("hud-overlay-drag", (_event, phase: string, screenX: number, screenY: number) => {
 	if (!hudOverlayWindow || hudOverlayWindow.isDestroyed()) return;
 
-	// On Linux the compositor (especially Wayland) refuses programmatic window
-	// placement, so BrowserWindow.setBounds() with x/y is silently ignored and
-	// the HUD appears "stuck".  The renderer marks the drag handle as
-	// -webkit-app-region: drag on Linux, letting the OS move the window for us.
-	// The resulting position is captured by the win.on("moved", ...) listener
-	// below so `hudUserPosition` stays in sync.
-	if (process.platform === "linux") {
+	// Compositors don't reliably honour -webkit-app-region: drag for this
+	// frameless, non-focusable, always-on-top overlay, so on Linux the renderer
+	// drives the drag through this IPC instead. That only fails on a native
+	// Wayland backend, where the compositor ignores setBounds x/y; there the
+	// -webkit-app-region fallback in the renderer is the best we can do and the
+	// win.on("moved", ...) listener below keeps `hudUserPosition` in sync.
+	if (isElectronNativeWayland()) {
 		return;
 	}
 
@@ -388,7 +409,15 @@ ipcMain.on("hud-overlay-drag", (_event, phase: string, screenX: number, screenY:
 
 ipcMain.on("hud-overlay-hide", () => {
 	if (hudOverlayWindow && !hudOverlayWindow.isDestroyed()) {
-		hudOverlayWindow.minimize();
+		// On Linux the overlay is focusable:false + skipTaskbar:true + frameless +
+		// alwaysOnTop, and compositors ignore minimize() for such windows (the button
+		// appears to do nothing). Hide it instead; it's restored from the tray menu
+		// ("Open"/"Show Controls" -> showHudOverlayFromTray(), which calls show()).
+		if (process.platform === "linux") {
+			hudOverlayWindow.hide();
+		} else {
+			hudOverlayWindow.minimize();
+		}
 	}
 });
 
