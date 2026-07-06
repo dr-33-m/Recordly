@@ -276,6 +276,34 @@ function setHudOverlayFallbackExpanded(expanded: boolean) {
 	}
 }
 
+// Enforces the correct HUD size without discarding a user-dragged position.
+// On non-passthrough platforms (Linux/Win10) the user moves the whole window,
+// so recomputing centered bounds here would snap the HUD back — this is called
+// on every hover toggle while recording. Passthrough platforms keep the
+// centered layout since the bar is dragged inside the window instead.
+function applyHudOverlayBoundsPreservingPosition() {
+	if (!hudOverlayWindow || hudOverlayWindow.isDestroyed()) {
+		return;
+	}
+
+	if (isHudOverlayMousePassthroughSupported()) {
+		applyHudOverlayBounds();
+		return;
+	}
+
+	const { workArea } = getHudOverlayDisplay();
+	const nextBounds = resizeHudOverlayFallbackBounds(
+		workArea,
+		hudOverlayWindow.getBounds(),
+		hudOverlayFallbackExpanded,
+	);
+	hudOverlayWindow.setBounds(nextBounds, false);
+	positionUpdateToastWindow();
+	if (hudOverlayWindow.isVisible()) {
+		hudOverlayWindow.moveTop();
+	}
+}
+
 function setHudOverlayMousePassthrough(ignore: boolean) {
 	hudOverlayIgnoringMouse =
 		hudOverlaySourceSelectionActive && !hudOverlayRecordingActive
@@ -295,7 +323,7 @@ function setHudOverlayMousePassthrough(ignore: boolean) {
 
 	if (hudOverlayRecordingActive) {
 		hudOverlayFallbackExpanded = false;
-		applyHudOverlayBounds();
+		applyHudOverlayBoundsPreservingPosition();
 		hudOverlayWindow.setIgnoreMouseEvents(false);
 		return;
 	}
@@ -664,7 +692,7 @@ export function reassertHudOverlayMousePassthrough(): void {
 export function setHudOverlayRecordingActive(recording: boolean): void {
 	hudOverlayRecordingActive = Boolean(recording);
 	hudOverlayFallbackExpanded = false;
-	applyHudOverlayBounds();
+	applyHudOverlayBoundsPreservingPosition();
 	setHudOverlayMousePassthrough(!hudOverlayRecordingActive);
 }
 
