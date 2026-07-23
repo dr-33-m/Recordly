@@ -1,10 +1,42 @@
 import type { Range } from "dnd-timeline";
-import { useCallback, useEffect, useMemo, useState, type RefObject, type WheelEvent } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useState, type WheelEvent } from "react";
 import { createInitialRange, normalizeWheelDeltaToPixels } from "../core/time";
+import { clampRange } from "../dnd/engine";
 
 interface UseTimelineRangeParams {
 	totalMs: number;
+	minVisibleRangeMs: number;
 	timelineContainerRef: RefObject<HTMLDivElement>;
+}
+
+/** Multiplier applied per zoom-in/out step from the controls or keyboard. */
+export const TIMELINE_ZOOM_STEP = 1.6;
+
+/**
+ * Zoom a range around `anchorMs`, keeping the anchor at the same relative
+ * position in the viewport so the timeline appears to scale under the cursor
+ * or playhead rather than jumping.
+ */
+export function zoomRangeAroundAnchor(
+	range: Range,
+	factor: number,
+	anchorMs: number,
+	config: { totalMs: number; minVisibleRangeMs: number },
+): Range {
+	const { totalMs, minVisibleRangeMs } = config;
+	const visibleSpan = Math.max(1, range.end - range.start);
+	const clampedAnchor = Math.max(range.start, Math.min(anchorMs, range.end));
+	const anchorRatio = (clampedAnchor - range.start) / visibleSpan;
+
+	// Clamp the span *before* positioning it. Clamping the resulting range instead
+	// would truncate an over-wide zoom-out against the timeline start and leave the
+	// view short of the full timeline.
+	const maxSpan = totalMs > 0 ? totalMs : visibleSpan / factor;
+	const nextSpan = Math.min(Math.max(visibleSpan / factor, minVisibleRangeMs), maxSpan);
+	const maxStart = Math.max(0, totalMs - nextSpan);
+	const nextStart = Math.max(0, Math.min(clampedAnchor - anchorRatio * nextSpan, maxStart));
+
+	return clampRange({ start: nextStart, end: nextStart + nextSpan }, config);
 }
 
 export interface TimelineWheelPanDeltaInput {
@@ -41,7 +73,11 @@ export function resolveTimelineWheelPanDeltaPx({
 	return 0;
 }
 
-export function useTimelineRange({ totalMs, timelineContainerRef }: UseTimelineRangeParams) {
+export function useTimelineRange({
+	totalMs,
+	minVisibleRangeMs,
+	timelineContainerRef,
+}: UseTimelineRangeParams) {
 	const [range, setRange] = useState<Range>(() => createInitialRange(totalMs));
 
 	useEffect(() => {
@@ -110,10 +146,49 @@ export function useTimelineRange({ totalMs, timelineContainerRef }: UseTimelineR
 		[clampedRange.end, clampedRange.start, panTimelineRange, timelineContainerRef, totalMs],
 	);
 
+	const zoomTimelineRange = useCallback(
+		(factor: number, anchorMs?: number) => {
+			if (totalMs <= 0 || !Number.isFinite(factor) || factor <= 0) {
+				return;
+			}
+
+			setRange((previous) => {
+				const normalized = clampRange(previous, { totalMs, minVisibleRangeMs });
+				const anchor = Number.isFinite(anchorMs)
+					? (anchorMs as number)
+					: (normalized.start + normalized.end) / 2;
+				return zoomRangeAroundAnchor(normalized, factor, anchor, {
+					totalMs,
+					minVisibleRangeMs,
+				});
+			});
+		},
+		[minVisibleRangeMs, totalMs],
+	);
+
+	const fitTimelineRange = useCallback(() => {
+		setRange(createInitialRange(totalMs));
+	}, [totalMs]);
+
+	// How many times the full timeline is magnified in the current viewport.
+	const zoomFactor = useMemo(() => {
+		const visibleSpan = clampedRange.end - clampedRange.start;
+		if (totalMs <= 0 || visibleSpan <= 0) return 1;
+		return totalMs / visibleSpan;
+	}, [clampedRange.end, clampedRange.start, totalMs]);
+
+	const canZoomIn = totalMs > 0 && clampedRange.end - clampedRange.start > minVisibleRangeMs + 1;
+	const canZoomOut = totalMs > 0 && zoomFactor > 1.001;
+
 	return {
 		range,
 		setRange,
 		clampedRange,
 		handleTimelineWheel,
+		zoomTimelineRange,
+		fitTimelineRange,
+		zoomFactor,
+		canZoomIn,
+		canZoomOut,
 	};
 }

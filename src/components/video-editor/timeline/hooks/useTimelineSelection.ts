@@ -1,6 +1,9 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 import type { TimelineRegion } from "../core/timelineTypes";
+import { resolveZoomSelection, type SelectionModifiers } from "./utils/timelineSelectionUtils";
+
+export type { SelectionModifiers };
 
 interface UseTimelineSelectionParams {
 	totalMs: number;
@@ -15,6 +18,8 @@ interface UseTimelineSelectionParams {
 	selectedAudioId?: string | null;
 	selectedCaptionId?: string | null;
 	onZoomDelete: (id: string) => void;
+	onZoomDeleteMany?: (ids: string[]) => void;
+	onZoomSelectionChange?: (ids: string[]) => void;
 	onClipDelete?: (id: string) => void;
 	onAnnotationDelete?: (id: string) => void;
 	onAudioDelete?: (id: string) => void;
@@ -37,6 +42,8 @@ export function useTimelineSelection({
 	selectedAudioId,
 	selectedCaptionId,
 	onZoomDelete,
+	onZoomDeleteMany,
+	onZoomSelectionChange,
 	onClipDelete,
 	onAnnotationDelete,
 	onAudioDelete,
@@ -49,8 +56,44 @@ export function useTimelineSelection({
 }: UseTimelineSelectionParams) {
 	const [keyframes, setKeyframes] = useState<{ id: string; time: number }[]>([]);
 	const [selectedKeyframeId, setSelectedKeyframeId] = useState<string | null>(null);
-	const [selectAllBlocksActive, setSelectAllBlocksActive] = useState(false);
+	const [multiSelectedZoomIds, setMultiSelectedZoomIds] = useState<string[]>([]);
+	// Anchor for shift-click range selection.
+	const zoomRangeAnchorIdRef = useRef<string | null>(null);
 	const hasAnyZoomBlocks = useMemo(() => zoomRegions.length > 0, [zoomRegions.length]);
+
+	const multiSelectedZoomIdSet = useMemo(
+		() => new Set(multiSelectedZoomIds),
+		[multiSelectedZoomIds],
+	);
+
+	// Zooms ordered by time — the basis for shift-click ranges and marquee hits.
+	const orderedZoomIds = useMemo(
+		() => [...zoomRegions].sort((a, b) => a.startMs - b.startMs).map((region) => region.id),
+		[zoomRegions],
+	);
+
+	// Drop ids for zooms that no longer exist (deleted elsewhere, project reloaded…).
+	useEffect(() => {
+		setMultiSelectedZoomIds((previous) => {
+			if (previous.length === 0) return previous;
+			const live = new Set(orderedZoomIds);
+			const next = previous.filter((id) => live.has(id));
+			return next.length === previous.length ? previous : next;
+		});
+	}, [orderedZoomIds]);
+
+	useEffect(() => {
+		onZoomSelectionChange?.(multiSelectedZoomIds);
+	}, [multiSelectedZoomIds, onZoomSelectionChange]);
+
+	/**
+	 * Every zoom that a delete should remove: the explicit multi-selection when
+	 * there is one, otherwise the single selected zoom.
+	 */
+	const effectiveSelectedZoomIds = useMemo(() => {
+		if (multiSelectedZoomIds.length > 0) return multiSelectedZoomIds;
+		return selectedZoomId ? [selectedZoomId] : [];
+	}, [multiSelectedZoomIds, selectedZoomId]);
 
 	const addKeyframe = useCallback(() => {
 		if (totalMs === 0) return;
@@ -76,13 +119,19 @@ export function useTimelineSelection({
 		[totalMs],
 	);
 
+	/**
+	 * Deletes every zoom in the current selection. Bulk deletes go through
+	 * `onZoomDeleteMany` so 200+ regions collapse into a single state update —
+	 * and therefore a single undo step — instead of one per region.
+	 */
 	const deleteSelectedZoom = useCallback(() => {
-		if (selectAllBlocksActive) {
-			zoomRegions.map((region) => region.id).forEach((id) => onZoomDelete(id));
-		} else if (selectedZoomId) {
-			onZoomDelete(selectedZoomId);
+		const ids = effectiveSelectedZoomIds;
+		if (ids.length === 0) return;
+
+		if (onZoomDeleteMany) {
+			onZoomDeleteMany(ids);
 		} else {
-			return;
+			ids.forEach((id) => onZoomDelete(id));
 		}
 
 		onSelectZoom(null);
@@ -90,12 +139,12 @@ export function useTimelineSelection({
 		onSelectAnnotation?.(null);
 		onSelectAudio?.(null);
 		onSelectCaption?.(null);
-		setSelectAllBlocksActive(false);
+		setMultiSelectedZoomIds([]);
+		zoomRangeAnchorIdRef.current = null;
 	}, [
-		selectAllBlocksActive,
-		zoomRegions,
+		effectiveSelectedZoomIds,
 		onZoomDelete,
-		selectedZoomId,
+		onZoomDeleteMany,
 		onSelectZoom,
 		onSelectClip,
 		onSelectAnnotation,
@@ -133,7 +182,8 @@ export function useTimelineSelection({
 		onSelectAnnotation?.(null);
 		onSelectAudio?.(null);
 		onSelectCaption?.(null);
-		setSelectAllBlocksActive(false);
+		setMultiSelectedZoomIds([]);
+		zoomRangeAnchorIdRef.current = null;
 	}, [onSelectZoom, onSelectClip, onSelectAnnotation, onSelectAudio, onSelectCaption]);
 
 	const activateSelectAllZooms = useCallback(() => {
@@ -143,20 +193,57 @@ export function useTimelineSelection({
 		onSelectAudio?.(null);
 		onSelectCaption?.(null);
 		setSelectedKeyframeId(null);
-		setSelectAllBlocksActive(true);
-	}, [onSelectZoom, onSelectClip, onSelectAnnotation, onSelectAudio, onSelectCaption]);
+		setMultiSelectedZoomIds(orderedZoomIds);
+		zoomRangeAnchorIdRef.current = orderedZoomIds[0] ?? null;
+	}, [
+		orderedZoomIds,
+		onSelectZoom,
+		onSelectClip,
+		onSelectAnnotation,
+		onSelectAudio,
+		onSelectCaption,
+	]);
+
+	/** Replace the zoom multi-selection wholesale (used by the marquee). */
+	const setZoomSelection = useCallback(
+		(ids: string[]) => {
+			setMultiSelectedZoomIds(ids);
+			zoomRangeAnchorIdRef.current = ids[0] ?? null;
+			// Keep the settings panel pointed at a single region only when the
+			// selection is unambiguous.
+			onSelectZoom(ids.length === 1 ? ids[0] : null);
+			if (ids.length > 0) {
+				onSelectClip?.(null);
+				onSelectAnnotation?.(null);
+				onSelectAudio?.(null);
+				onSelectCaption?.(null);
+				setSelectedKeyframeId(null);
+			}
+		},
+		[onSelectZoom, onSelectClip, onSelectAnnotation, onSelectAudio, onSelectCaption],
+	);
 
 	const handleSelectZoom = useCallback(
-		(id: string | null) => {
-			setSelectAllBlocksActive(false);
-			onSelectZoom(id);
+		(id: string | null, modifiers?: SelectionModifiers) => {
+			const next = resolveZoomSelection({
+				orderedIds: orderedZoomIds,
+				currentIds: multiSelectedZoomIds,
+				primaryId: selectedZoomId,
+				anchorId: zoomRangeAnchorIdRef.current,
+				targetId: id,
+				modifiers,
+			});
+
+			setMultiSelectedZoomIds(next.ids);
+			zoomRangeAnchorIdRef.current = next.anchorId;
+			onSelectZoom(next.primaryId);
 		},
-		[onSelectZoom],
+		[multiSelectedZoomIds, orderedZoomIds, selectedZoomId, onSelectZoom],
 	);
 
 	const handleSelectClip = useCallback(
 		(id: string | null) => {
-			setSelectAllBlocksActive(false);
+			setMultiSelectedZoomIds([]);
 			onSelectClip?.(id);
 		},
 		[onSelectClip],
@@ -164,7 +251,7 @@ export function useTimelineSelection({
 
 	const handleSelectAnnotation = useCallback(
 		(id: string | null) => {
-			setSelectAllBlocksActive(false);
+			setMultiSelectedZoomIds([]);
 			onSelectAnnotation?.(id);
 		},
 		[onSelectAnnotation],
@@ -172,7 +259,7 @@ export function useTimelineSelection({
 
 	const handleSelectAudio = useCallback(
 		(id: string | null) => {
-			setSelectAllBlocksActive(false);
+			setMultiSelectedZoomIds([]);
 			onSelectAudio?.(id);
 		},
 		[onSelectAudio],
@@ -180,7 +267,7 @@ export function useTimelineSelection({
 
 	const handleSelectCaption = useCallback(
 		(id: string | null) => {
-			setSelectAllBlocksActive(false);
+			setMultiSelectedZoomIds([]);
 			onSelectCaption?.(id);
 		},
 		[onSelectCaption],
@@ -214,8 +301,10 @@ export function useTimelineSelection({
 		keyframes,
 		selectedKeyframeId,
 		setSelectedKeyframeId,
-		selectAllBlocksActive,
-		setSelectAllBlocksActive,
+		multiSelectedZoomIds,
+		multiSelectedZoomIdSet,
+		effectiveSelectedZoomIds,
+		setZoomSelection,
 		hasAnyZoomBlocks,
 		activateSelectAllZooms,
 		addKeyframe,

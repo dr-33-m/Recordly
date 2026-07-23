@@ -532,6 +532,13 @@ export interface AudioRegion {
 	volume: number;
 	normalize?: boolean;
 	trackIndex?: number;
+	/**
+	 * Offset into `audioPath` where this region starts playing. Non-zero after a
+	 * left-edge trim or a split; defaults to 0 (play the file from the top).
+	 */
+	sourceStartMs?: number;
+	/** Cached length of `audioPath`, used to clamp trims and to tile repeats. */
+	sourceDurationMs?: number;
 }
 
 export interface CaptionCue {

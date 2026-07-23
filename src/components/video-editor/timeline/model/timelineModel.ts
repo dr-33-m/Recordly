@@ -95,6 +95,7 @@ export function buildTimelineItems(params: {
 		audioPath: region.audioPath,
 		audioGain: region.volume,
 		audioNormalize: Boolean(region.normalize),
+		audioSourceStartMs: Math.max(0, region.sourceStartMs ?? 0),
 		variant: "audio",
 	}));
 

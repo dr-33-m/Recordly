@@ -14,7 +14,12 @@
 		"addedSuggestions": "Added {{count}} interaction-based zoom suggestion(s)",
 		"label": "Zoom {{index}}",
 		"addZoom": "Add Zoom (Z)",
-		"suggestZooms": "Suggest Zooms from Cursor"
+		"suggestZooms": "Suggest Zooms from Cursor",
+		"clearAll": "Clear all zooms",
+		"clearAllTitle": "Clear all zooms?",
+		"clearAllDescription": "This removes all {{count}} zoom regions. You can undo it.",
+		"clearAllConfirm": "Clear all",
+		"deleteSelected": "Delete selected zooms"
 	},
 	"trim": {
 		"cannotPlace": "Cannot place trim here",

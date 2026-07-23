@@ -1,7 +1,10 @@
 import {
+	CopySimple,
 	CursorClick,
 	Palette,
 	PresentationChart,
+	Repeat,
+	Scissors,
 	Trash as Trash2,
 	UploadSimple as Upload,
 	X,
@@ -726,6 +729,9 @@ interface SettingsPanelProps {
 	onAudioVolumeChange?: (volume: number) => void;
 	onAudioNormalizeChange?: (normalize: boolean) => void;
 	onAudioDelete?: (id: string) => void;
+	onAudioSplit?: (id: string) => void;
+	onAudioDuplicate?: (id: string) => void;
+	onAudioRepeatToEnd?: (id: string) => void;
 	shadowIntensity?: number;
 	onShadowChange?: (intensity: number) => void;
 	backgroundBlur?: number;
@@ -1188,6 +1194,9 @@ export function SettingsPanel({
 	onAudioVolumeChange,
 	onAudioNormalizeChange,
 	onAudioDelete,
+	onAudioSplit,
+	onAudioDuplicate,
+	onAudioRepeatToEnd,
 	shadowIntensity = 0.67,
 	onShadowChange,
 	backgroundBlur = 0,
@@ -3396,19 +3405,6 @@ export function SettingsPanel({
 						</div>
 					</div>
 				) : null}
-				{selectedZoomId && (
-					<Button
-						onClick={() => {
-							if (selectedZoomId && onZoomDelete) onZoomDelete(selectedZoomId);
-						}}
-						variant="destructive"
-						size="sm"
-						className="mt-1 h-8 w-full gap-2 border border-red-500/20 bg-red-500/10 text-xs text-red-400 transition-all hover:border-red-500/30 hover:bg-red-500/20"
-					>
-						<Trash2 className="h-3 w-3" />
-						{tSettings("zoom.deleteZoom")}
-					</Button>
-				)}
 				{renderExtensionPanelsForSections("zoom", "appearance", "frame", "crop")}
 			</section>
 		);
@@ -3427,6 +3423,47 @@ export function SettingsPanel({
 					>
 						{t("common.actions.reset", "Reset")}
 					</button>
+				</div>
+				<div className="grid grid-cols-3 gap-1.5">
+					<Button
+						variant="ghost"
+						size="sm"
+						disabled={!selectedAudioId || !onAudioSplit}
+						onClick={() => selectedAudioId && onAudioSplit?.(selectedAudioId)}
+						className="h-8 flex-col gap-0.5 rounded-lg border border-foreground/8 bg-foreground/[0.03] px-1 py-1 text-[10px] text-muted-foreground transition-all hover:bg-foreground/[0.07] hover:text-foreground disabled:opacity-40"
+						title={tSettings("audio.splitHint", "Split this clip at the playhead")}
+					>
+						<Scissors className="h-3.5 w-3.5" />
+						<span>{tSettings("audio.split", "Split")}</span>
+					</Button>
+					<Button
+						variant="ghost"
+						size="sm"
+						disabled={!selectedAudioId || !onAudioDuplicate}
+						onClick={() => selectedAudioId && onAudioDuplicate?.(selectedAudioId)}
+						className="h-8 flex-col gap-0.5 rounded-lg border border-foreground/8 bg-foreground/[0.03] px-1 py-1 text-[10px] text-muted-foreground transition-all hover:bg-foreground/[0.07] hover:text-foreground disabled:opacity-40"
+						title={tSettings(
+							"audio.duplicateHint",
+							"Place a copy right after this clip",
+						)}
+					>
+						<CopySimple className="h-3.5 w-3.5" />
+						<span>{tSettings("audio.duplicate", "Duplicate")}</span>
+					</Button>
+					<Button
+						variant="ghost"
+						size="sm"
+						disabled={!selectedAudioId || !onAudioRepeatToEnd}
+						onClick={() => selectedAudioId && onAudioRepeatToEnd?.(selectedAudioId)}
+						className="h-8 flex-col gap-0.5 rounded-lg border border-foreground/8 bg-foreground/[0.03] px-1 py-1 text-[10px] text-muted-foreground transition-all hover:bg-foreground/[0.07] hover:text-foreground disabled:opacity-40"
+						title={tSettings(
+							"audio.repeatHint",
+							"Tile copies of this clip to the end of the timeline",
+						)}
+					>
+						<Repeat className="h-3.5 w-3.5" />
+						<span>{tSettings("audio.repeat", "Repeat")}</span>
+					</Button>
 				</div>
 				<SliderControl
 					label={tSettings("audio.volume", "Volume")}
@@ -3527,10 +3564,7 @@ export function SettingsPanel({
 					{hasClipSourceAudio && (
 						<div className="flex items-center justify-between rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
 							<span className="text-[10px] text-muted-foreground">
-								{tSettings(
-									"clip.separateClipFromAudio",
-									"Separate clip from audio",
-								)}
+								{tSettings("clip.showSourceAudio", "Show source audio")}
 							</span>
 							<Switch
 								checked={selectedClipShowSourceAudio ?? false}

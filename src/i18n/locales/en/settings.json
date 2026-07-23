@@ -22,7 +22,7 @@
 		"mute": "Mute",
 		"mutedState": "Audio is muted",
 		"unmutedState": "Audio is playing",
-		"separateClipFromAudio": "Separate clip from audio",
+		"showSourceAudio": "Show source audio",
 		"delete": "Delete Clip"
 	},
 	"effects": {
@@ -253,6 +253,12 @@
 		"systemLabel": "Source System",
 		"micLabel": "Source Mic",
 		"mixedLabel": "Source",
-		"deleteRegion": "Delete Audio"
+		"deleteRegion": "Delete Audio",
+		"split": "Split",
+		"splitHint": "Split this clip at the playhead",
+		"duplicate": "Duplicate",
+		"duplicateHint": "Place a copy right after this clip",
+		"repeat": "Repeat",
+		"repeatHint": "Tile copies of this clip to the end of the timeline"
 	}
 }

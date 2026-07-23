@@ -24,7 +24,12 @@ interface UseTimelineAudioActionsParams {
 	regions: {
 		audio: TimelineAudioRegion[];
 	};
-	onAudioAdded?: (span: { start: number; end: number }, audioPath: string, trackIndex?: number) => void;
+	onAudioAdded?: (
+		span: { start: number; end: number },
+		audioPath: string,
+		trackIndex?: number,
+		sourceDurationMs?: number,
+	) => void;
 	deps?: Partial<TimelineAudioActionsDeps>;
 }
 
@@ -131,6 +136,7 @@ export function useTimelineAudioActions({
 				{ start: startPos, end: startPos + placement.durationMs },
 				audioPath,
 				placement.trackIndex,
+				audioDurationMs,
 			);
 		},
 		[videoDuration, totalMs, onAudioAdded, deps, currentTimeMs, audioRegions],

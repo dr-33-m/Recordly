@@ -1,6 +1,6 @@
 import { Plus } from "@phosphor-icons/react";
 import type { Span } from "dnd-timeline";
-import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
 	SourceAudioTrackMeta,
 	SourceAudioTrackSettings,
@@ -20,12 +20,13 @@ import type {
 	ZoomRegion,
 } from "../types";
 import KeyframeMarkers from "./components/markers/KeyframeMarkers";
+import TimelineZoomControls from "./components/toolbar/TimelineZoomControls";
 import TimelineCanvas from "./components/viewport/TimelineCanvas";
 import TimelineWrapper from "./components/wrapper/TimelineWrapper";
 import { calculateTimelineScale } from "./core/time";
 import { useTimelineAudioPeaks } from "./hooks/useTimelineAudioPeaks";
 import { useTimelineEditorRuntime } from "./hooks/useTimelineEditorRuntime";
-import { useTimelineRange } from "./hooks/useTimelineRange";
+import { TIMELINE_ZOOM_STEP, useTimelineRange } from "./hooks/useTimelineRange";
 import {
 	buildSourceSidecarPathCandidates,
 	buildTimelineSourceAudioTracks,
@@ -45,6 +46,12 @@ export interface TimelineEditorProps {
 	onZoomSuggested?: (span: Span, focus: ZoomFocus) => void;
 	onZoomSpanChange: (id: string, span: Span) => void;
 	onZoomDelete: (id: string) => void;
+	/** Bulk delete — one state update, one undo step. */
+	onZoomDeleteMany?: (ids: string[]) => void;
+	/** Reports the timeline's zoom multi-selection so the toolbar can act on it. */
+	onZoomSelectionChange?: (ids: string[]) => void;
+	/** Removes every zoom region (owner is expected to confirm first). */
+	onClearAllZooms?: () => void;
 	selectedZoomId: string | null;
 	onSelectZoom: (id: string | null) => void;
 	trimRegions?: TrimRegion[];
@@ -64,9 +71,17 @@ export interface TimelineEditorProps {
 	speedRegions?: SpeedRegion[];
 	onSpeedSpanChange?: (id: string, span: Span) => void;
 	audioRegions?: AudioRegion[];
-	onAudioAdded?: (span: Span, audioPath: string, trackIndex?: number) => void;
+	onAudioAdded?: (
+		span: Span,
+		audioPath: string,
+		trackIndex?: number,
+		sourceDurationMs?: number,
+	) => void;
 	onAudioSpanChange?: (id: string, span: Span, trackIndex?: number) => void;
 	onAudioDelete?: (id: string) => void;
+	onAudioDuplicate?: (id: string) => void;
+	onAudioSplit?: (id: string, atMs: number) => void;
+	onAudioRepeatToEnd?: (id: string) => void;
 	selectedAudioId?: string | null;
 	onSelectAudio?: (id: string | null) => void;
 	captionRegions?: CaptionCue[];
@@ -127,6 +142,9 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 			onZoomSuggested,
 			onZoomSpanChange,
 			onZoomDelete,
+			onZoomDeleteMany,
+			onZoomSelectionChange,
+			onClearAllZooms,
 			selectedZoomId,
 			onSelectZoom,
 			trimRegions = [],
@@ -149,6 +167,9 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 			onAudioAdded,
 			onAudioSpanChange,
 			onAudioDelete,
+			onAudioDuplicate,
+			onAudioSplit,
+			onAudioRepeatToEnd,
 			selectedAudioId,
 			onSelectAudio,
 			captionRegions = [],
@@ -190,10 +211,29 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 
 		const timelineContainerRef = useRef<HTMLDivElement>(null);
 		const isTimelineFocusedRef = useRef(false);
-		const { setRange, clampedRange, handleTimelineWheel } = useTimelineRange({
+		const {
+			setRange,
+			clampedRange,
+			handleTimelineWheel,
+			zoomTimelineRange,
+			fitTimelineRange,
+			zoomFactor,
+			canZoomIn,
+			canZoomOut,
+		} = useTimelineRange({
 			totalMs,
+			minVisibleRangeMs: timelineScale.minVisibleRangeMs,
 			timelineContainerRef,
 		});
+		// Zoom keeps the playhead pinned, so the moment you are inspecting stays put.
+		const handleZoomIn = useCallback(
+			() => zoomTimelineRange(TIMELINE_ZOOM_STEP, currentTimeMs),
+			[currentTimeMs, zoomTimelineRange],
+		);
+		const handleZoomOut = useCallback(
+			() => zoomTimelineRange(1 / TIMELINE_ZOOM_STEP, currentTimeMs),
+			[currentTimeMs, zoomTimelineRange],
+		);
 
 		const [liveSpanPreviewById, setLiveSpanPreviewById] = useState<Record<string, Span>>({});
 		const [isDragging, setIsDragging] = useState(false);
@@ -325,8 +365,10 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 			keyframes,
 			selectedKeyframeId,
 			setSelectedKeyframeId,
-			selectAllBlocksActive,
-			setSelectAllBlocksActive,
+			multiSelectedZoomIdSet,
+			effectiveSelectedZoomIds,
+			setZoomSelection,
+			deleteSelectedZoom,
 			handleKeyframeMove,
 			clearSelectedBlocks,
 			handleSelectZoom,
@@ -359,6 +401,8 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 			onZoomSuggested,
 			onZoomSpanChange,
 			onZoomDelete,
+			onZoomDeleteMany,
+			onZoomSelectionChange,
 			selectedZoomId,
 			onSelectZoom,
 			trimRegions,
@@ -381,6 +425,7 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 			onAudioAdded,
 			onAudioSpanChange,
 			onAudioDelete,
+			onAudioDuplicate,
 			selectedAudioId,
 			onSelectAudio,
 			captionCues: captionRegions,
@@ -392,6 +437,9 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 			isMac,
 			keyShortcuts,
 			isTimelineFocusedRef,
+			zoomTimelineIn: handleZoomIn,
+			zoomTimelineOut: handleZoomOut,
+			fitTimelineRange,
 		});
 
 		if (!videoDuration || videoDuration === 0) {
@@ -411,10 +459,10 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 		}
 
 		return (
-			<div className="flex-1 min-h-0 flex flex-col bg-editor-bg overflow-hidden">
+			<div className="relative flex-1 min-h-0 flex flex-col bg-editor-bg overflow-hidden">
 				<div
 					ref={timelineContainerRef}
-					className="flex-1 min-h-0 overflow-auto bg-editor-bg relative"
+					className="themed-scrollbar flex-1 min-h-0 overflow-auto bg-editor-bg relative"
 					tabIndex={0}
 					onFocus={() => {
 						isTimelineFocusedRef.current = true;
@@ -428,7 +476,6 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 					}}
 					onClick={() => {
 						setSelectedKeyframeId(null);
-						setSelectAllBlocksActive(false);
 					}}
 					onWheel={handleTimelineWheel}
 				>
@@ -493,7 +540,15 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 							selectedAnnotationId={selectedAnnotationId}
 							selectedAudioId={selectedAudioId}
 							selectedCaptionId={selectedCaptionId}
-							selectAllBlocksActive={selectAllBlocksActive}
+							multiSelectedZoomIdSet={multiSelectedZoomIdSet}
+							effectiveSelectedZoomIds={effectiveSelectedZoomIds}
+							onZoomSelectionReplace={setZoomSelection}
+							onDeleteSelectedZooms={deleteSelectedZoom}
+							onClearAllZooms={onClearAllZooms}
+							onAudioDelete={onAudioDelete}
+							onAudioDuplicate={onAudioDuplicate}
+							onAudioSplit={onAudioSplit}
+							onAudioRepeatToEnd={onAudioRepeatToEnd}
 							onClearBlockSelection={clearSelectedBlocks}
 							keyframes={keyframes}
 							sourceAudioTracks={sourceAudioTracks}
@@ -506,6 +561,14 @@ const TimelineEditor = forwardRef<TimelineEditorHandle, TimelineEditorProps>(
 						/>
 					</TimelineWrapper>
 				</div>
+				<TimelineZoomControls
+					zoomFactor={zoomFactor}
+					canZoomIn={canZoomIn}
+					canZoomOut={canZoomOut}
+					onZoomIn={handleZoomIn}
+					onZoomOut={handleZoomOut}
+					onFit={fitTimelineRange}
+				/>
 			</div>
 		);
 	},

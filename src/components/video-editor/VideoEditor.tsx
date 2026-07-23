@@ -6,6 +6,7 @@ import {
 	Crop,
 	Cursor,
 	DownloadSimple as Download,
+	FloppyDisk,
 	FolderOpen,
 	Gear,
 	Pause,
@@ -18,6 +19,7 @@ import {
 	SkipBack,
 	SkipForward,
 	Sparkle,
+	Trash,
 	ArrowCounterClockwise as Undo2,
 	UserCircle as User,
 	SpeakerLow as Volume1,
@@ -117,6 +119,7 @@ const PhSettings = (props: { className?: string; weight?: "fill" | "regular" }) 
 import type { SourceAudioTrackSettings } from "@/components/video-editor/audio/audioTypes";
 import { extensionHost } from "@/lib/extensions";
 import { useVideoEditorAudio } from "./audio/useVideoEditorAudio";
+import { applyAudioSpanChange, buildAudioRepeats, splitAudioRegion } from "./audioRegionEditing";
 import { resolveAutoCaptionSourcePath } from "./autoCaptionSource";
 import { CropControl } from "./CropControl";
 import {
@@ -176,6 +179,7 @@ import {
 	openExternalLink,
 	RECORDLY_ISSUES_URL,
 } from "./TutorialHelp";
+import { resolveAudioPlacement } from "./timeline/hooks/utils/timelineAudioPlacement";
 import TimelineEditor, { type TimelineEditorHandle } from "./timeline/TimelineEditor";
 import {
 	normalizeCursorTelemetry,
@@ -413,6 +417,8 @@ export default function VideoEditor() {
 	const [projectSaveDialogDraft, setProjectSaveDialogDraft] = useState("");
 	const [isSavingProjectDialog, setIsSavingProjectDialog] = useState(false);
 	const [unsavedChangesDialogOpen, setUnsavedChangesDialogOpen] = useState(false);
+	const [clearZoomsDialogOpen, setClearZoomsDialogOpen] = useState(false);
+	const [selectedZoomIds, setSelectedZoomIds] = useState<string[]>([]);
 	const [unsavedChangesDialogActionLabel, setUnsavedChangesDialogActionLabel] =
 		useState("continue");
 	const [loading, setLoading] = useState(true);
@@ -3557,6 +3563,10 @@ export default function VideoEditor() {
 		() => getTimelineDurationMs(clipRegions, duration * 1000) / 1000,
 		[clipRegions, duration],
 	);
+	const timelineTotalMs = useMemo(
+		() => Math.max(0, Math.round(timelineDuration * 1000)),
+		[timelineDuration],
+	);
 
 	// Merge clip speeds into speed regions so playback + export respect per-clip speed
 	const effectiveSpeedRegions = useMemo<SpeedRegion[]>(() => {
@@ -4009,6 +4019,42 @@ export default function VideoEditor() {
 		[selectedZoomId],
 	);
 
+	/**
+	 * Bulk delete. Auto-suggest can produce hundreds of zooms on a long recording,
+	 * and removing them one at a time is both slow and fills the undo stack — this
+	 * is a single state update, so it is a single undo step.
+	 */
+	const handleZoomDeleteMany = useCallback(
+		(ids: string[]) => {
+			if (ids.length === 0) return;
+			const idSet = new Set(ids);
+			setZoomRegions((prev) => prev.filter((region) => !idSet.has(region.id)));
+			if (selectedZoomId && idSet.has(selectedZoomId)) {
+				setSelectedZoomId(null);
+			}
+			for (const id of ids) {
+				extensionHost.emitEvent({ type: "timeline:region-removed", data: { id } });
+			}
+		},
+		[selectedZoomId],
+	);
+
+	const handleClearAllZooms = useCallback(() => {
+		handleZoomDeleteMany(zoomRegions.map((region) => region.id));
+	}, [handleZoomDeleteMany, zoomRegions]);
+
+	// Clearing a handful is cheap to redo; clearing a suggest-zooms run is not, so
+	// only the larger case interrupts with a confirmation.
+	const CLEAR_ZOOMS_CONFIRM_THRESHOLD = 10;
+	const requestClearAllZooms = useCallback(() => {
+		if (zoomRegions.length === 0) return;
+		if (zoomRegions.length > CLEAR_ZOOMS_CONFIRM_THRESHOLD) {
+			setClearZoomsDialogOpen(true);
+			return;
+		}
+		handleClearAllZooms();
+	}, [handleClearAllZooms, zoomRegions.length]);
+
 	const handleSelectClip = useCallback((id: string | null) => {
 		setSelectedClipId(id);
 		if (id) {
@@ -4212,24 +4258,31 @@ export default function VideoEditor() {
 		}
 	}, []);
 
-	const handleAudioAdded = useCallback((span: Span, audioPath: string, trackIndex?: number) => {
-		const id = `audio-${nextAudioIdRef.current++}`;
-		const newRegion: AudioRegion = {
-			id,
-			startMs: Math.round(span.start),
-			endMs: Math.round(span.end),
-			audioPath,
-			volume: 1,
-			normalize: false,
-			trackIndex,
-		};
-		setAudioRegions((prev) => [...prev, newRegion]);
-		setSelectedAudioId(id);
-		setSelectedZoomId(null);
-		setSelectedAnnotationId(null);
-		setSelectedCaptionId(null);
-		setActiveEffectSection("audio");
-	}, []);
+	const handleAudioAdded = useCallback(
+		(span: Span, audioPath: string, trackIndex?: number, sourceDurationMs?: number) => {
+			const id = `audio-${nextAudioIdRef.current++}`;
+			const newRegion: AudioRegion = {
+				id,
+				startMs: Math.round(span.start),
+				endMs: Math.round(span.end),
+				audioPath,
+				volume: 1,
+				normalize: false,
+				trackIndex,
+				sourceStartMs: 0,
+				...(sourceDurationMs && sourceDurationMs > 0
+					? { sourceDurationMs: Math.round(sourceDurationMs) }
+					: {}),
+			};
+			setAudioRegions((prev) => [...prev, newRegion]);
+			setSelectedAudioId(id);
+			setSelectedZoomId(null);
+			setSelectedAnnotationId(null);
+			setSelectedCaptionId(null);
+			setActiveEffectSection("audio");
+		},
+		[],
+	);
 
 	const handleAudioSpanChange = useCallback((id: string, span: Span, trackIndex?: number) => {
 		const normalizedTrackIndex =
@@ -4241,9 +4294,9 @@ export default function VideoEditor() {
 			prev.map((region) =>
 				region.id === id
 					? {
-							...region,
-							startMs: Math.round(span.start),
-							endMs: Math.round(span.end),
+							// Left-edge drags trim into the file rather than just
+							// shortening the region, so the source offset moves too.
+							...applyAudioSpanChange(region, span),
 							...(normalizedTrackIndex === undefined
 								? {}
 								: { trackIndex: normalizedTrackIndex }),
@@ -4252,6 +4305,102 @@ export default function VideoEditor() {
 			),
 		);
 	}, []);
+
+	const handleAudioSplit = useCallback(
+		(id: string, atMs: number) => {
+			const target = audioRegions.find((region) => region.id === id);
+			if (!target) return;
+
+			const halves = splitAudioRegion(
+				target,
+				atMs,
+				() => `audio-${nextAudioIdRef.current++}`,
+			);
+			if (!halves) {
+				toast.info("Move the playhead inside the audio clip to split it");
+				return;
+			}
+
+			setAudioRegions((prev) =>
+				prev.flatMap((region) => (region.id === id ? halves : [region])),
+			);
+			setSelectedAudioId(halves[0].id);
+		},
+		[audioRegions],
+	);
+
+	const handleAudioDuplicate = useCallback(
+		(id: string) => {
+			const target = audioRegions.find((region) => region.id === id);
+			if (!target) return;
+
+			const durationMs = target.endMs - target.startMs;
+			const startPos = target.endMs;
+			const preferredTrackIndex = target.trackIndex ?? 0;
+			// Prefer landing right after the original; fall back to any free track.
+			const placement =
+				resolveAudioPlacement({
+					audioRegions,
+					startPos,
+					totalMs: timelineTotalMs,
+					audioDurationMs: durationMs,
+					preferredTrackIndex,
+				}) ??
+				resolveAudioPlacement({
+					audioRegions,
+					startPos,
+					totalMs: timelineTotalMs,
+					audioDurationMs: durationMs,
+				});
+
+			if (!placement) {
+				toast.error("No room to duplicate", {
+					description: "There is no free space after this clip.",
+				});
+				return;
+			}
+
+			const newId = `audio-${nextAudioIdRef.current++}`;
+			setAudioRegions((prev) => [
+				...prev,
+				{
+					...target,
+					id: newId,
+					startMs: startPos,
+					endMs: startPos + placement.durationMs,
+					trackIndex: placement.trackIndex,
+				},
+			]);
+			setSelectedAudioId(newId);
+		},
+		[audioRegions, timelineTotalMs],
+	);
+
+	const handleAudioRepeatToEnd = useCallback(
+		(id: string) => {
+			const target = audioRegions.find((region) => region.id === id);
+			if (!target) return;
+
+			const copies = buildAudioRepeats(
+				target,
+				audioRegions,
+				timelineTotalMs,
+				() => `audio-${nextAudioIdRef.current++}`,
+			);
+			if (copies.length === 0) {
+				toast.info("Nothing to repeat", {
+					description: "There is no free space after this clip.",
+				});
+				return;
+			}
+
+			setAudioRegions((prev) => [...prev, ...copies]);
+			toast.success(
+				`Repeated audio ${copies.length} more time${copies.length === 1 ? "" : "s"}`,
+			);
+		},
+		[audioRegions, timelineTotalMs],
+	);
 
 	const handleAudioVolumeChange = useCallback(
 		(volume: number) => {
@@ -5700,6 +5849,44 @@ export default function VideoEditor() {
 		</Dialog>
 	);
 
+	const clearZoomsDialog = (
+		<Dialog open={clearZoomsDialogOpen} onOpenChange={setClearZoomsDialogOpen}>
+			<DialogContent className="max-w-sm border-foreground/10 bg-editor-dialog text-foreground">
+				<DialogHeader>
+					<DialogTitle>
+						{t("timeline.zoom.clearAllTitle", "Clear all zooms?")}
+					</DialogTitle>
+					<DialogDescription className="text-muted-foreground">
+						{t(
+							"timeline.zoom.clearAllDescription",
+							"This removes all {{count}} zoom regions. You can undo it.",
+							{ count: zoomRegions.length },
+						)}
+					</DialogDescription>
+				</DialogHeader>
+				<DialogFooter>
+					<Button
+						type="button"
+						variant="ghost"
+						onClick={() => setClearZoomsDialogOpen(false)}
+					>
+						{t("common.actions.cancel", "Cancel")}
+					</Button>
+					<Button
+						type="button"
+						variant="destructive"
+						onClick={() => {
+							handleClearAllZooms();
+							setClearZoomsDialogOpen(false);
+						}}
+					>
+						{t("timeline.zoom.clearAllConfirm", "Clear all")}
+					</Button>
+				</DialogFooter>
+			</DialogContent>
+		</Dialog>
+	);
+
 	const projectBrowser = (
 		<ProjectBrowserDialog
 			open={projectBrowserOpen}
@@ -5887,6 +6074,26 @@ export default function VideoEditor() {
 					className="flex items-center justify-self-end pr-3"
 					style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
 				>
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						onClick={() => void handleSaveProject()}
+						disabled={!hasUnsavedChanges}
+						className="mr-3 inline-flex h-8 items-center gap-1.5 rounded-[5px] border border-foreground/10 bg-foreground/5 px-2.5 text-foreground transition-colors hover:bg-foreground/10 hover:text-foreground disabled:cursor-default disabled:opacity-50"
+						title={`${t("editor.project.save", "Save project")} (${isMac ? "⌘S" : "Ctrl+S"})`}
+						aria-label={t("editor.project.save", "Save project")}
+					>
+						<FloppyDisk className="h-4 w-4" />
+						<span className="text-sm font-medium tracking-tight">
+							{hasUnsavedChanges
+								? t("editor.project.save", "Save project")
+								: t("editor.project.saved", "Saved")}
+						</span>
+						{hasUnsavedChanges ? (
+							<span className="size-1.5 shrink-0 rounded-full bg-[#2563EB]" />
+						) : null}
+					</Button>
 					<Popover open={presetPopoverOpen} onOpenChange={setPresetPopoverOpen}>
 						<PopoverTrigger asChild>
 							<button
@@ -6398,6 +6605,11 @@ export default function VideoEditor() {
 								onAudioVolumeChange={handleAudioVolumeChange}
 								onAudioNormalizeChange={handleAudioNormalizeChange}
 								onAudioDelete={handleAudioDelete}
+								onAudioSplit={(id) =>
+									handleAudioSplit(id, Math.round(timelinePlayheadTime * 1000))
+								}
+								onAudioDuplicate={handleAudioDuplicate}
+								onAudioRepeatToEnd={handleAudioRepeatToEnd}
 								shadowIntensity={shadowIntensity}
 								onShadowChange={setShadowIntensity}
 								backgroundBlur={backgroundBlur}
@@ -6698,6 +6910,35 @@ export default function VideoEditor() {
 								>
 									<WandSparkles className="w-4 h-4" />
 								</Button>
+								{zoomRegions.length > 0 ? (
+									<Button
+										onClick={() => {
+											if (selectedZoomIds.length > 0) {
+												handleZoomDeleteMany(selectedZoomIds);
+												return;
+											}
+											requestClearAllZooms();
+										}}
+										variant="ghost"
+										size="sm"
+										className="h-7 gap-1 rounded-full px-2 text-muted-foreground transition-all hover:bg-red-500/10 hover:text-red-400"
+										title={
+											selectedZoomIds.length > 0
+												? t(
+														"timeline.zoom.deleteSelected",
+														"Delete selected zooms",
+													)
+												: t("timeline.zoom.clearAll", "Clear all zooms")
+										}
+									>
+										<Trash className="h-4 w-4" />
+										<span className="text-[10px] font-semibold tabular-nums">
+											{selectedZoomIds.length > 0
+												? selectedZoomIds.length
+												: zoomRegions.length}
+										</span>
+									</Button>
+								) : null}
 								<Button
 									onClick={() => timelineRef.current?.splitClip()}
 									variant="ghost"
@@ -6828,6 +7069,9 @@ export default function VideoEditor() {
 						onZoomSuggested={handleZoomSuggested}
 						onZoomSpanChange={handleZoomSpanChange}
 						onZoomDelete={handleZoomDelete}
+						onZoomDeleteMany={handleZoomDeleteMany}
+						onZoomSelectionChange={setSelectedZoomIds}
+						onClearAllZooms={requestClearAllZooms}
 						selectedZoomId={selectedZoomId}
 						onSelectZoom={handleSelectZoom}
 						trimRegions={trimRegions}
@@ -6840,6 +7084,9 @@ export default function VideoEditor() {
 						onAudioAdded={handleAudioAdded}
 						onAudioSpanChange={handleAudioSpanChange}
 						onAudioDelete={handleAudioDelete}
+						onAudioDuplicate={handleAudioDuplicate}
+						onAudioSplit={handleAudioSplit}
+						onAudioRepeatToEnd={handleAudioRepeatToEnd}
 						selectedAudioId={selectedAudioId}
 						onSelectAudio={handleSelectAudio}
 						captionRegions={effectiveCaptionRegions}
@@ -6923,6 +7170,7 @@ export default function VideoEditor() {
 			{projectBrowser}
 			{projectSaveDialog}
 			{unsavedChangesDialog}
+			{clearZoomsDialog}
 			{nativeCaptureUnavailableDialog}
 
 			<Toaster className="pointer-events-auto" />

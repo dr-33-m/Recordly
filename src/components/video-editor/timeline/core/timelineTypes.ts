@@ -36,6 +36,8 @@ export interface TimelineRenderItem {
 	audioPath?: string;
 	audioGain?: number;
 	audioNormalize?: boolean;
+	/** Offset into the audio file this region starts at (after a trim/split). */
+	audioSourceStartMs?: number;
 	zoomDepth?: number;
 	zoomMode?: ZoomMode;
 	speedValue?: number;

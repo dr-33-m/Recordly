@@ -43,4 +43,44 @@ describe("normalizeProjectEditor", () => {
 			linked: true,
 		});
 	});
+
+	describe("audio region source offsets", () => {
+		const baseRegion = {
+			id: "audio-1",
+			startMs: 1_000,
+			endMs: 5_000,
+			audioPath: "/music/song.mp3",
+			volume: 0.8,
+			trackIndex: 0,
+		};
+
+		it("round-trips the source offset and cached file duration", () => {
+			const editor = normalizeProjectEditor({
+				audioRegions: [{ ...baseRegion, sourceStartMs: 30_000, sourceDurationMs: 180_000 }],
+			});
+
+			expect(editor.audioRegions[0]).toMatchObject({
+				sourceStartMs: 30_000,
+				sourceDurationMs: 180_000,
+			});
+		});
+
+		it("loads legacy projects without the new fields as playing from the top", () => {
+			const editor = normalizeProjectEditor({ audioRegions: [baseRegion] });
+
+			expect(editor.audioRegions[0].sourceStartMs).toBe(0);
+			expect(editor.audioRegions[0].sourceDurationMs).toBeUndefined();
+		});
+
+		it("rejects a negative or non-numeric source offset", () => {
+			const editor = normalizeProjectEditor({
+				audioRegions: [
+					{ ...baseRegion, id: "a", sourceStartMs: -500 },
+					{ ...baseRegion, id: "b", sourceStartMs: Number.NaN },
+				],
+			});
+
+			expect(editor.audioRegions.map((region) => region.sourceStartMs)).toEqual([0, 0]);
+		});
+	});
 });

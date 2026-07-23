@@ -1,4 +1,12 @@
-import { Plus } from "@phosphor-icons/react";
+import {
+	CopySimple,
+	Plus,
+	Repeat,
+	Scissors,
+	SelectionPlus,
+	Trash,
+	MagnifyingGlassPlus as ZoomIn,
+} from "@phosphor-icons/react";
 import { useTimelineContext } from "dnd-timeline";
 import {
 	type MouseEvent,
@@ -32,6 +40,7 @@ import {
 import type { TimelineRenderItem } from "../../core/timelineTypes";
 import { DEFAULT_CAPTION_DURATION_MS } from "../../hooks/actions/useTimelineCaptionActions";
 import { useTimelineAudioPeaks } from "../../hooks/useTimelineAudioPeaks";
+import type { SelectionModifiers } from "../../hooks/useTimelineSelection";
 import Item from "../../Item";
 import glassStyles from "../../ItemGlass.module.css";
 import Row from "../../Row";
@@ -43,11 +52,18 @@ import {
 } from "../../timelineLayout";
 import TimelineAxis from "../axis/TimelineAxis";
 import ClipMarkerOverlay from "../overlays/ClipMarkerOverlay";
+import TimelineContextMenu, {
+	type TimelineContextMenuAction,
+	type TimelineContextMenuState,
+} from "../overlays/TimelineContextMenu";
 import PlaybackCursor from "../playhead/PlaybackCursor";
 
 const HINT_CLIP = "Press C to split clip";
+const HINT_ZOOM = "Press Z to add a zoom at the playhead";
 const HINT_ANNOTATION = "Press A to add annotation";
 const HINT_AUDIO = "Click music icon to add audio";
+
+const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 
 interface TimelineCanvasProps {
 	items: TimelineRenderItem[];
@@ -55,7 +71,7 @@ interface TimelineCanvasProps {
 	currentTimeMs: number;
 	onSeek?: (time: number) => void;
 	canPlaceZoomAtMs?: (startMs: number) => boolean;
-	onSelectZoom?: (id: string | null) => void;
+	onSelectZoom?: (id: string | null, modifiers?: SelectionModifiers) => void;
 	onSelectClip?: (id: string | null) => void;
 	onSelectAnnotation?: (id: string | null) => void;
 	onSelectAudio?: (id: string | null) => void;
@@ -71,7 +87,16 @@ interface TimelineCanvasProps {
 	selectedAnnotationId?: string | null;
 	selectedAudioId?: string | null;
 	selectedCaptionId?: string | null;
-	selectAllBlocksActive?: boolean;
+	multiSelectedZoomIdSet?: ReadonlySet<string>;
+	/** Zooms a delete would remove: the multi-selection, else the single selection. */
+	effectiveSelectedZoomIds?: string[];
+	onZoomSelectionReplace?: (ids: string[]) => void;
+	onDeleteSelectedZooms?: () => void;
+	onClearAllZooms?: () => void;
+	onAudioDelete?: (id: string) => void;
+	onAudioDuplicate?: (id: string) => void;
+	onAudioSplit?: (id: string, atMs: number) => void;
+	onAudioRepeatToEnd?: (id: string) => void;
 	onClearBlockSelection?: () => void;
 	keyframes?: { id: string; time: number }[];
 	sourceAudioTracks?: SourceAudioTrackWithPeaks[];
@@ -163,11 +188,15 @@ function useTimelineLaneHover({
 		event.stopPropagation();
 	}, []);
 
-	const onClick = useCallback(
+	// Adding is a double-click, not a single click. On a dense lane a single click
+	// almost always lands on lane background rather than a block, so making it an
+	// add gesture meant users kept creating regions when they meant to select one.
+	const onDoubleClick = useCallback(
 		(event: MouseEvent<HTMLDivElement>) => {
 			event.stopPropagation();
-			// Respect the lane's enabled flag so a hidden ghost can't still add on click.
+			// Respect the lane's enabled flag so a hidden ghost can't still add.
 			if (!enabled || !onAddAtMs || hoverMs === null) return;
+			if ((event.target as HTMLElement).closest("[data-timeline-item]")) return;
 			const startMs = Math.max(0, Math.min(hoverMs, videoDurationMs));
 			if (canPlaceAtMs && !canPlaceAtMs(startMs)) return;
 			onAddAtMs(startMs);
@@ -220,7 +249,7 @@ function useTimelineLaneHover({
 		onMouseMove,
 		onMouseLeave,
 		onMouseDown,
-		onClick,
+		onDoubleClick,
 	};
 }
 
@@ -230,8 +259,6 @@ interface TimelineHoverParams {
 	rangeStart: number;
 	rangeEnd: number;
 	videoDurationMs: number;
-	onAddZoomAtMs?: (startMs: number) => void;
-	canPlaceZoomAtMs?: (startMs: number) => boolean;
 	onAddCaptionAtMs?: (startMs: number) => void;
 	canPlaceCaptionAtMs?: (startMs: number) => boolean;
 	resolveCaptionSpanAtMs?: (startMs: number) => { start: number; end: number } | null;
@@ -247,8 +274,6 @@ function useTimelineHover({
 	rangeStart,
 	rangeEnd,
 	videoDurationMs,
-	onAddZoomAtMs,
-	canPlaceZoomAtMs,
 	onAddCaptionAtMs,
 	canPlaceCaptionAtMs,
 	resolveCaptionSpanAtMs,
@@ -293,19 +318,6 @@ function useTimelineHover({
 		[isTimelineHovered, updateTimelineHoverTime],
 	);
 
-	const zoom = useTimelineLaneHover({
-		direction,
-		rangeStart,
-		visibleDurationMs,
-		videoDurationMs,
-		valueToPixels,
-		ghostDurationMs: Math.min(1000, videoDurationMs),
-		enabled: true,
-		isDragging,
-		onAddAtMs: onAddZoomAtMs,
-		canPlaceAtMs: canPlaceZoomAtMs,
-	});
-
 	const caption = useTimelineLaneHover({
 		direction,
 		rangeStart,
@@ -323,9 +335,8 @@ function useTimelineHover({
 	const handleTimelineMouseLeave = useCallback(() => {
 		setIsTimelineHovered(false);
 		setTimelineHoverMs(null);
-		zoom.reset();
 		caption.reset();
-	}, [zoom.reset, caption.reset]);
+	}, [caption.reset]);
 
 	const timelineGhostOffsetPx =
 		timelineHoverMs === null ? 0 : valueToPixels(Math.max(0, timelineHoverMs - rangeStart));
@@ -337,15 +348,6 @@ function useTimelineHover({
 		handleTimelineMouseEnter,
 		handleTimelineMouseMove,
 		handleTimelineMouseLeave,
-		canShowGhostZoom: zoom.canShowGhost,
-		ghostStartMs: zoom.ghostStartMs,
-		ghostStartOffsetPx: zoom.ghostStartOffsetPx,
-		ghostWidthPx: zoom.ghostWidthPx,
-		handleZoomRowMouseEnter: zoom.onMouseEnter,
-		handleZoomRowMouseMove: zoom.onMouseMove,
-		handleZoomRowMouseLeave: zoom.onMouseLeave,
-		handleZoomRowMouseDown: zoom.onMouseDown,
-		handleZoomRowClick: zoom.onClick,
 		canShowGhostCaption: caption.canShowGhost,
 		captionGhostStartMs: caption.ghostStartMs,
 		captionGhostStartOffsetPx: caption.ghostStartOffsetPx,
@@ -354,39 +356,33 @@ function useTimelineHover({
 		handleCaptionRowMouseMove: caption.onMouseMove,
 		handleCaptionRowMouseLeave: caption.onMouseLeave,
 		handleCaptionRowMouseDown: caption.onMouseDown,
-		handleCaptionRowClick: caption.onClick,
+		handleCaptionRowDoubleClick: caption.onDoubleClick,
 	};
 }
 
 interface TimelineCanvasRowsProps {
 	items: TimelineRenderItem[];
 	videoDurationMs: number;
-	selectAllBlocksActive: boolean;
+	multiSelectedZoomIdSet: ReadonlySet<string>;
 	selectedZoomId: string | null;
 	selectedClipId?: string | null;
 	selectedAnnotationId?: string | null;
 	selectedAudioId?: string | null;
 	selectedCaptionId?: string | null;
-	onSelectZoom?: (id: string | null) => void;
+	onSelectZoom?: (id: string | null, modifiers?: SelectionModifiers) => void;
 	onSelectClip?: (id: string | null) => void;
 	onSelectAnnotation?: (id: string | null) => void;
 	onSelectAudio?: (id: string | null) => void;
 	onSelectCaption?: (id: string | null) => void;
+	onZoomContextMenu?: (id: string, event: MouseEvent<HTMLDivElement>) => void;
+	onZoomLaneContextMenu?: MouseEventHandler<HTMLDivElement>;
+	onAudioContextMenu?: (id: string, event: MouseEvent<HTMLDivElement>) => void;
 	sourceAudioTracks?: SourceAudioTrackWithPeaks[];
 	getSourceAudioTrackSettingsForClip?: (clipId: string | null) => SourceAudioTrackSettings;
 	showSourceAudioTrack?: boolean;
 	liveSpanPreviewById?: Record<string, { start: number; end: number }>;
 	liveHiddenItemIds?: string[];
 	direction: string;
-	canShowGhostZoom: boolean;
-	ghostStartMs: number | null;
-	ghostStartOffsetPx: number;
-	ghostWidthPx: number;
-	onZoomRowMouseEnter: MouseEventHandler<HTMLDivElement>;
-	onZoomRowMouseMove: MouseEventHandler<HTMLDivElement>;
-	onZoomRowMouseLeave: MouseEventHandler<HTMLDivElement>;
-	onZoomRowMouseDown: MouseEventHandler<HTMLDivElement>;
-	onZoomRowClick: MouseEventHandler<HTMLDivElement>;
 	captionsEnabled?: boolean;
 	canShowGhostCaption: boolean;
 	captionGhostStartMs: number | null;
@@ -396,7 +392,7 @@ interface TimelineCanvasRowsProps {
 	onCaptionRowMouseMove: MouseEventHandler<HTMLDivElement>;
 	onCaptionRowMouseLeave: MouseEventHandler<HTMLDivElement>;
 	onCaptionRowMouseDown: MouseEventHandler<HTMLDivElement>;
-	onCaptionRowClick: MouseEventHandler<HTMLDivElement>;
+	onCaptionRowDoubleClick: MouseEventHandler<HTMLDivElement>;
 }
 
 interface AudioItemWithWaveformProps {
@@ -405,6 +401,7 @@ interface AudioItemWithWaveformProps {
 	waveformSpan: { start: number; end: number };
 	isSelected: boolean;
 	onSelectAudio?: (id: string | null) => void;
+	onContextMenu?: (id: string, event: MouseEvent<HTMLDivElement>) => void;
 }
 
 function AudioItemWithWaveform({
@@ -413,12 +410,16 @@ function AudioItemWithWaveform({
 	waveformSpan,
 	isSelected,
 	onSelectAudio,
+	onContextMenu,
 }: AudioItemWithWaveformProps) {
 	const { peaks } = useTimelineAudioPeaks(item.audioPath ?? null);
+	// Window into the source file this region plays: regions can start partway in
+	// after a trim or split, so the waveform must be offset to match.
 	const normalizedWaveformSpan = useMemo(() => {
 		const duration = Math.max(0, waveformSpan.end - waveformSpan.start);
-		return { start: 0, end: duration };
-	}, [waveformSpan.end, waveformSpan.start]);
+		const sourceStart = Math.max(0, item.audioSourceStartMs ?? 0);
+		return { start: sourceStart, end: sourceStart + duration };
+	}, [item.audioSourceStartMs, waveformSpan.end, waveformSpan.start]);
 	return (
 		<Item
 			id={item.id}
@@ -426,6 +427,7 @@ function AudioItemWithWaveform({
 			span={span}
 			isSelected={isSelected}
 			onSelectId={onSelectAudio}
+			onContextMenu={onContextMenu}
 			variant="audio"
 			waveformPeaks={peaks}
 			waveformSegmentSpan={normalizedWaveformSpan}
@@ -440,7 +442,7 @@ function AudioItemWithWaveform({
 const TimelineCanvasRows = memo(function TimelineCanvasRows({
 	items,
 	videoDurationMs,
-	selectAllBlocksActive,
+	multiSelectedZoomIdSet,
 	selectedZoomId,
 	selectedClipId,
 	selectedAnnotationId,
@@ -451,21 +453,15 @@ const TimelineCanvasRows = memo(function TimelineCanvasRows({
 	onSelectAnnotation,
 	onSelectAudio,
 	onSelectCaption,
+	onZoomContextMenu,
+	onZoomLaneContextMenu,
+	onAudioContextMenu,
 	sourceAudioTracks = [],
 	getSourceAudioTrackSettingsForClip,
 	showSourceAudioTrack = false,
 	liveSpanPreviewById,
 	liveHiddenItemIds,
 	direction,
-	canShowGhostZoom,
-	ghostStartMs,
-	ghostStartOffsetPx,
-	ghostWidthPx,
-	onZoomRowMouseEnter,
-	onZoomRowMouseMove,
-	onZoomRowMouseLeave,
-	onZoomRowMouseDown,
-	onZoomRowClick,
 	captionsEnabled = false,
 	canShowGhostCaption,
 	captionGhostStartMs,
@@ -475,7 +471,7 @@ const TimelineCanvasRows = memo(function TimelineCanvasRows({
 	onCaptionRowMouseMove,
 	onCaptionRowMouseLeave,
 	onCaptionRowMouseDown,
-	onCaptionRowClick,
+	onCaptionRowDoubleClick,
 }: TimelineCanvasRowsProps) {
 	const hiddenIds = useMemo(() => new Set(liveHiddenItemIds ?? []), [liveHiddenItemIds]);
 	const { clipItems, zoomItems, captionItems, annotationRows, audioRows } = useMemo(() => {
@@ -589,43 +585,9 @@ const TimelineCanvasRows = memo(function TimelineCanvasRows({
 			<Row
 				id={ZOOM_ROW_ID}
 				isEmpty={zoomItems.length === 0}
-				onMouseEnter={onZoomRowMouseEnter}
-				onMouseMove={onZoomRowMouseMove}
-				onMouseLeave={onZoomRowMouseLeave}
-				onMouseDown={onZoomRowMouseDown}
-				onClick={onZoomRowClick}
+				hint={HINT_ZOOM}
+				onContextMenu={onZoomLaneContextMenu}
 			>
-				{canShowGhostZoom && ghostStartMs !== null && (
-					<div className="absolute inset-0 z-[3] pointer-events-none">
-						<div
-							className="absolute top-1/2 -translate-y-1/2 h-[85%] min-h-[22px]"
-							style={
-								direction === "rtl"
-									? {
-											right: `${ghostStartOffsetPx}px`,
-											width: `${ghostWidthPx}px`,
-										}
-									: {
-											left: `${ghostStartOffsetPx}px`,
-											width: `${ghostWidthPx}px`,
-										}
-							}
-						>
-							<div
-								className={cn(
-									glassStyles.glassPurple,
-									"w-full h-full overflow-hidden flex items-center justify-center cursor-default relative opacity-80",
-								)}
-							>
-								<div className={cn(glassStyles.zoomEndCap, glassStyles.left)} />
-								<div className={cn(glassStyles.zoomEndCap, glassStyles.right)} />
-								<div className="relative z-10 inline-flex h-4 w-4 items-center justify-center rounded-full border border-white/45 bg-white/15 text-white">
-									<Plus className="h-2.5 w-2.5" />
-								</div>
-							</div>
-						</div>
-					</div>
-				)}
 				{zoomItems
 					.filter((item) => !hiddenIds.has(item.id))
 					.map((item) => (
@@ -634,8 +596,11 @@ const TimelineCanvasRows = memo(function TimelineCanvasRows({
 							key={item.id}
 							rowId={item.rowId}
 							span={item.span}
-							isSelected={selectAllBlocksActive || item.id === selectedZoomId}
+							isSelected={
+								multiSelectedZoomIdSet.has(item.id) || item.id === selectedZoomId
+							}
 							onSelectId={onSelectZoom}
+							onContextMenu={onZoomContextMenu}
 							zoomDepth={item.zoomDepth}
 							zoomMode={item.zoomMode}
 							variant="zoom"
@@ -653,7 +618,7 @@ const TimelineCanvasRows = memo(function TimelineCanvasRows({
 					onMouseMove={onCaptionRowMouseMove}
 					onMouseLeave={onCaptionRowMouseLeave}
 					onMouseDown={onCaptionRowMouseDown}
-					onClick={onCaptionRowClick}
+					onDoubleClick={onCaptionRowDoubleClick}
 				>
 					{canShowGhostCaption && captionGhostStartMs !== null && (
 						<div className="absolute inset-0 z-[3] pointer-events-none">
@@ -738,6 +703,7 @@ const TimelineCanvasRows = memo(function TimelineCanvasRows({
 							waveformSpan={liveSpanPreviewById?.[item.id] ?? item.span}
 							isSelected={item.id === selectedAudioId}
 							onSelectAudio={onSelectAudio}
+							onContextMenu={onAudioContextMenu}
 						/>
 					))}
 				</Row>
@@ -768,7 +734,15 @@ export default function TimelineCanvas({
 	selectedAnnotationId,
 	selectedAudioId,
 	selectedCaptionId,
-	selectAllBlocksActive = false,
+	multiSelectedZoomIdSet = EMPTY_ID_SET,
+	effectiveSelectedZoomIds = [],
+	onZoomSelectionReplace,
+	onDeleteSelectedZooms,
+	onClearAllZooms,
+	onAudioDelete,
+	onAudioDuplicate,
+	onAudioSplit,
+	onAudioRepeatToEnd,
 	onClearBlockSelection,
 	keyframes = [],
 	sourceAudioTracks = [],
@@ -954,15 +928,6 @@ export default function TimelineCanvas({
 		handleTimelineMouseEnter,
 		handleTimelineMouseMove,
 		handleTimelineMouseLeave,
-		canShowGhostZoom,
-		ghostStartMs,
-		ghostStartOffsetPx,
-		ghostWidthPx,
-		handleZoomRowMouseEnter,
-		handleZoomRowMouseMove,
-		handleZoomRowMouseLeave,
-		handleZoomRowMouseDown,
-		handleZoomRowClick,
 		canShowGhostCaption,
 		captionGhostStartMs,
 		captionGhostStartOffsetPx,
@@ -971,15 +936,13 @@ export default function TimelineCanvas({
 		handleCaptionRowMouseMove,
 		handleCaptionRowMouseLeave,
 		handleCaptionRowMouseDown,
-		handleCaptionRowClick,
+		handleCaptionRowDoubleClick,
 	} = useTimelineHover({
 		direction,
 		sidebarWidth,
 		rangeStart: range.start,
 		rangeEnd: range.end,
 		videoDurationMs,
-		onAddZoomAtMs,
-		canPlaceZoomAtMs,
 		onAddCaptionAtMs,
 		canPlaceCaptionAtMs,
 		resolveCaptionSpanAtMs,
@@ -988,6 +951,164 @@ export default function TimelineCanvas({
 		isDragging,
 		valueToPixels,
 	});
+
+	// Summaries of the zoom items, used by the context-menu bulk actions.
+	const zoomItemSummaries = useMemo(
+		() =>
+			items
+				.filter((item) => item.rowId === ZOOM_ROW_ID)
+				.map((item) => ({ id: item.id, span: item.span })),
+		[items],
+	);
+
+	const [contextMenu, setContextMenu] = useState<TimelineContextMenuState | null>(null);
+	const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+	const openZoomContextMenu = useCallback(
+		(_id: string, event: MouseEvent<HTMLDivElement>) => {
+			const selectedCount = effectiveSelectedZoomIds.length;
+			const actions: TimelineContextMenuAction[] = [
+				{
+					id: "delete",
+					label:
+						selectedCount > 1
+							? `Delete ${selectedCount} selected zooms`
+							: "Delete zoom",
+					icon: <Trash className="h-3.5 w-3.5" />,
+					destructive: true,
+					onSelect: () => onDeleteSelectedZooms?.(),
+				},
+			];
+			if (onZoomSelectionReplace && zoomItemSummaries.length > 1) {
+				actions.push({
+					id: "select-all",
+					label: `Select all ${zoomItemSummaries.length} zooms`,
+					icon: <SelectionPlus className="h-3.5 w-3.5" />,
+					onSelect: () =>
+						onZoomSelectionReplace(zoomItemSummaries.map((item) => item.id)),
+				});
+			}
+			if (onClearAllZooms && zoomItemSummaries.length > 0) {
+				actions.push({
+					id: "clear-all",
+					label: "Clear all zooms",
+					icon: <Trash className="h-3.5 w-3.5" />,
+					destructive: true,
+					onSelect: onClearAllZooms,
+				});
+			}
+			setContextMenu({ x: event.clientX, y: event.clientY, actions });
+		},
+		[
+			effectiveSelectedZoomIds.length,
+			onClearAllZooms,
+			onDeleteSelectedZooms,
+			onZoomSelectionReplace,
+			zoomItemSummaries,
+		],
+	);
+
+	const openZoomLaneContextMenu = useCallback(
+		(event: MouseEvent<HTMLDivElement>) => {
+			// Item-level menus handle their own right-clicks.
+			if ((event.target as HTMLElement).closest("[data-timeline-item]")) return;
+			event.preventDefault();
+
+			const rect = event.currentTarget.getBoundingClientRect();
+			const offsetX =
+				direction === "rtl" ? rect.right - event.clientX : event.clientX - rect.left;
+			const atMs = Math.max(
+				0,
+				Math.min(
+					range.start + (offsetX / Math.max(1, rect.width)) * (range.end - range.start),
+					videoDurationMs,
+				),
+			);
+
+			const actions: TimelineContextMenuAction[] = [];
+			if (onAddZoomAtMs && (canPlaceZoomAtMs?.(atMs) ?? true)) {
+				actions.push({
+					id: "add-zoom",
+					label: "Add zoom here",
+					icon: <ZoomIn className="h-3.5 w-3.5" />,
+					onSelect: () => onAddZoomAtMs(atMs),
+				});
+			}
+			if (onZoomSelectionReplace && zoomItemSummaries.length > 0) {
+				actions.push({
+					id: "select-all",
+					label: `Select all ${zoomItemSummaries.length} zooms`,
+					icon: <SelectionPlus className="h-3.5 w-3.5" />,
+					onSelect: () =>
+						onZoomSelectionReplace(zoomItemSummaries.map((item) => item.id)),
+				});
+			}
+			if (onClearAllZooms && zoomItemSummaries.length > 0) {
+				actions.push({
+					id: "clear-all",
+					label: "Clear all zooms",
+					icon: <Trash className="h-3.5 w-3.5" />,
+					destructive: true,
+					onSelect: onClearAllZooms,
+				});
+			}
+			if (actions.length === 0) return;
+			setContextMenu({ x: event.clientX, y: event.clientY, actions });
+		},
+		[
+			canPlaceZoomAtMs,
+			direction,
+			onAddZoomAtMs,
+			onClearAllZooms,
+			onZoomSelectionReplace,
+			range.end,
+			range.start,
+			videoDurationMs,
+			zoomItemSummaries,
+		],
+	);
+
+	const openAudioContextMenu = useCallback(
+		(id: string, event: MouseEvent<HTMLDivElement>) => {
+			const actions: TimelineContextMenuAction[] = [];
+			if (onAudioSplit) {
+				actions.push({
+					id: "split",
+					label: "Split at playhead",
+					icon: <Scissors className="h-3.5 w-3.5" />,
+					onSelect: () => onAudioSplit(id, currentTimeMs),
+				});
+			}
+			if (onAudioDuplicate) {
+				actions.push({
+					id: "duplicate",
+					label: "Duplicate",
+					icon: <CopySimple className="h-3.5 w-3.5" />,
+					onSelect: () => onAudioDuplicate(id),
+				});
+			}
+			if (onAudioRepeatToEnd) {
+				actions.push({
+					id: "repeat",
+					label: "Repeat to end",
+					icon: <Repeat className="h-3.5 w-3.5" />,
+					onSelect: () => onAudioRepeatToEnd(id),
+				});
+			}
+			if (onAudioDelete) {
+				actions.push({
+					id: "delete",
+					label: "Delete audio",
+					icon: <Trash className="h-3.5 w-3.5" />,
+					destructive: true,
+					onSelect: () => onAudioDelete(id),
+				});
+			}
+			if (actions.length === 0) return;
+			setContextMenu({ x: event.clientX, y: event.clientY, actions });
+		},
+		[currentTimeMs, onAudioDelete, onAudioDuplicate, onAudioRepeatToEnd, onAudioSplit],
+	);
 
 	return (
 		<div
@@ -1034,7 +1155,7 @@ export default function TimelineCanvas({
 				<TimelineCanvasRows
 					items={items}
 					videoDurationMs={videoDurationMs}
-					selectAllBlocksActive={selectAllBlocksActive}
+					multiSelectedZoomIdSet={multiSelectedZoomIdSet}
 					selectedZoomId={selectedZoomId}
 					selectedClipId={selectedClipId}
 					selectedAnnotationId={selectedAnnotationId}
@@ -1045,21 +1166,15 @@ export default function TimelineCanvas({
 					onSelectAnnotation={onSelectAnnotation}
 					onSelectAudio={onSelectAudio}
 					onSelectCaption={onSelectCaption}
+					onZoomContextMenu={openZoomContextMenu}
+					onZoomLaneContextMenu={openZoomLaneContextMenu}
+					onAudioContextMenu={openAudioContextMenu}
 					sourceAudioTracks={sourceAudioTracks}
 					getSourceAudioTrackSettingsForClip={getSourceAudioTrackSettingsForClip}
 					showSourceAudioTrack={showSourceAudioTrack}
 					liveSpanPreviewById={liveSpanPreviewById}
 					liveHiddenItemIds={liveHiddenItemIds}
 					direction={direction}
-					canShowGhostZoom={canShowGhostZoom}
-					ghostStartMs={ghostStartMs}
-					ghostStartOffsetPx={ghostStartOffsetPx}
-					ghostWidthPx={ghostWidthPx}
-					onZoomRowMouseEnter={handleZoomRowMouseEnter}
-					onZoomRowMouseMove={handleZoomRowMouseMove}
-					onZoomRowMouseLeave={handleZoomRowMouseLeave}
-					onZoomRowMouseDown={handleZoomRowMouseDown}
-					onZoomRowClick={handleZoomRowClick}
 					captionsEnabled={captionsEnabled}
 					canShowGhostCaption={canShowGhostCaption}
 					captionGhostStartMs={captionGhostStartMs}
@@ -1069,9 +1184,10 @@ export default function TimelineCanvas({
 					onCaptionRowMouseMove={handleCaptionRowMouseMove}
 					onCaptionRowMouseLeave={handleCaptionRowMouseLeave}
 					onCaptionRowMouseDown={handleCaptionRowMouseDown}
-					onCaptionRowClick={handleCaptionRowClick}
+					onCaptionRowDoubleClick={handleCaptionRowDoubleClick}
 				/>
 			</div>
+			<TimelineContextMenu state={contextMenu} onClose={closeContextMenu} />
 		</div>
 	);
 }

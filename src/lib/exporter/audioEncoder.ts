@@ -1018,10 +1018,11 @@ export class AudioProcessor {
 		// Skip if region doesn't overlap with this chunk
 		if (localEndSec <= 0 || localStartSec >= chunkDurationSec) return;
 
-		// Clip to chunk bounds
-		let bufferOffsetSec = 0;
+		// Clip to chunk bounds. The region may also start partway into its source
+		// file (after a left-edge trim or a split), so seed the read offset with it.
+		let bufferOffsetSec = Math.max(0, region.sourceStartMs ?? 0) / 1000;
 		if (localStartSec < 0) {
-			bufferOffsetSec = -localStartSec;
+			bufferOffsetSec += -localStartSec;
 			localStartSec = 0;
 		}
 		if (localEndSec > chunkDurationSec) {

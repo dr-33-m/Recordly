@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { formatClipSpeedLabel } from "../clipSpeedChange";
 import AudioWaveform from "./components/waveform/AudioWaveform";
 import type { AudioPeaksData } from "./core/timelineTypes";
+import type { SelectionModifiers } from "./hooks/useTimelineSelection";
 import glassStyles from "./ItemGlass.module.css";
 
 interface ItemProps {
@@ -26,7 +27,8 @@ interface ItemProps {
 	children: React.ReactNode;
 	isSelected?: boolean;
 	onSelect?: () => void;
-	onSelectId?: (id: string) => void;
+	onSelectId?: (id: string, modifiers?: SelectionModifiers) => void;
+	onContextMenu?: (id: string, event: React.MouseEvent<HTMLDivElement>) => void;
 	zoomDepth?: number;
 	zoomMode?: "auto" | "manual";
 	speedValue?: number;
@@ -68,6 +70,7 @@ export default function Item({
 	isSelected = false,
 	onSelect,
 	onSelectId,
+	onContextMenu,
 	zoomDepth = 1,
 	zoomMode = "auto",
 	speedValue,
@@ -144,9 +147,32 @@ export default function Item({
 							: glassStyles.glassYellow;
 
 	const MIN_ITEM_PX = 6;
-	const handleSelect = () => {
+
+	// Only the primary button changes the selection on press. Right-click is
+	// handled in onContextMenu so it can keep an existing multi-selection intact.
+	const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+		if (event.button !== 0) {
+			// dnd-timeline's useItem starts a resize from any button when the press
+			// lands in an edge handle, so a right-click near a block edge would
+			// resize it. Stopping here in the capture phase keeps the menu clean.
+			event.stopPropagation();
+			return;
+		}
 		onSelect?.();
 		onSelectId?.(id);
+	};
+
+	const handleContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+		if (!onContextMenu) return;
+		event.preventDefault();
+		event.stopPropagation();
+		// Right-clicking outside the current selection moves the selection here;
+		// right-clicking inside it leaves the selection alone.
+		if (!isSelected) {
+			onSelect?.();
+			onSelectId?.(id);
+		}
+		onContextMenu(id, event);
 	};
 	const safeItemStyle = {
 		...itemStyle,
@@ -162,7 +188,8 @@ export default function Item({
 			{...listeners}
 			{...attributes}
 			data-timeline-item="true"
-			onPointerDownCapture={handleSelect}
+			onPointerDownCapture={handlePointerDown}
+			onContextMenu={handleContextMenu}
 			className="group h-full"
 		>
 			<div

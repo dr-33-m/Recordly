@@ -679,6 +679,11 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 						: rawStart + 1000;
 					const startMs = Math.max(0, Math.min(rawStart, rawEnd));
 					const endMs = Math.max(startMs + 1, rawEnd);
+					// Projects saved before trim/split support have no source offset;
+					// 0 keeps them playing their file from the top as they always did.
+					const sourceDurationMs = isFiniteNumber(region.sourceDurationMs)
+						? Math.max(0, Math.round(region.sourceDurationMs))
+						: undefined;
 
 					return {
 						id: region.id,
@@ -690,6 +695,10 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 						trackIndex: isFiniteNumber(region.trackIndex)
 							? Math.max(0, Math.floor(region.trackIndex))
 							: 0,
+						sourceStartMs: isFiniteNumber(region.sourceStartMs)
+							? Math.max(0, Math.round(region.sourceStartMs))
+							: 0,
+						...(sourceDurationMs === undefined ? {} : { sourceDurationMs }),
 					};
 				})
 		: [];

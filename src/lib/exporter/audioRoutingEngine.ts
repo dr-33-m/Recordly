@@ -1,5 +1,5 @@
-import type { AudioRegion } from "@/components/video-editor/types";
 import { SOURCE_AUDIO_NORMALIZE_GAIN } from "@/components/video-editor/audio/audioTypes";
+import type { AudioRegion } from "@/components/video-editor/types";
 import { resolveSourceAudioFallbackPaths } from "./sourceAudioFallback";
 
 export type SourceTrackId = "mic" | "system" | "mixed";
@@ -11,6 +11,8 @@ export interface ResolvedAudioTrack {
 	sourceRef: {
 		path: string;
 		startDelayMs: number;
+		/** Offset into the source file where playback of this track begins. */
+		startOffsetMs: number;
 	};
 	gain: number;
 	timelineBinding: {
@@ -69,13 +71,16 @@ export function buildResolvedAudioPlan(input: {
 	if (!hasDedicatedTracks && pathsByTrack.mixed) playbackPaths.push(pathsByTrack.mixed);
 
 	const includeEmbeddedInExport = !pathsByTrack.system && !pathsByTrack.mixed;
-	const resolvedRegions = (input.audioRegions ?? []).slice().sort((a, b) => a.startMs - b.startMs);
+	const resolvedRegions = (input.audioRegions ?? [])
+		.slice()
+		.sort((a, b) => a.startMs - b.startMs);
 	const tracks: ResolvedAudioTrack[] = resolvedRegions.map((region) => ({
 		id: `user:${region.id}`,
 		kind: "user",
 		sourceRef: {
 			path: region.audioPath,
 			startDelayMs: 0,
+			startOffsetMs: Math.max(0, region.sourceStartMs ?? 0),
 		},
 		gain: clampGain(region.volume * (region.normalize ? SOURCE_AUDIO_NORMALIZE_GAIN : 1), 1),
 		timelineBinding: {
@@ -92,6 +97,7 @@ export function buildResolvedAudioPlan(input: {
 			sourceRef: {
 				path: audioPath,
 				startDelayMs: 0,
+				startOffsetMs: 0,
 			},
 			gain: clampGain(input.sourceTrackGainById?.[trackId] ?? 1, 2),
 			timelineBinding: {
@@ -108,6 +114,7 @@ export function buildResolvedAudioPlan(input: {
 			sourceRef: {
 				path: input.videoResource,
 				startDelayMs: 0,
+				startOffsetMs: 0,
 			},
 			gain: clampGain(input.embeddedGain ?? input.sourceTrackGainById?.mixed ?? 1, 2),
 			timelineBinding: {

@@ -37,6 +37,8 @@ interface UseTimelineEditorRuntimeParams {
 	onZoomSuggested?: (span: Span, focus: ZoomFocus) => void;
 	onZoomSpanChange: (id: string, span: Span) => void;
 	onZoomDelete: (id: string) => void;
+	onZoomDeleteMany?: (ids: string[]) => void;
+	onZoomSelectionChange?: (ids: string[]) => void;
 	selectedZoomId: string | null;
 	onSelectZoom: (id: string | null) => void;
 	trimRegions: TrimRegion[];
@@ -56,9 +58,15 @@ interface UseTimelineEditorRuntimeParams {
 	speedRegions: SpeedRegion[];
 	onSpeedSpanChange?: (id: string, span: Span) => void;
 	audioRegions: AudioRegion[];
-	onAudioAdded?: (span: Span, audioPath: string, trackIndex?: number) => void;
+	onAudioAdded?: (
+		span: Span,
+		audioPath: string,
+		trackIndex?: number,
+		sourceDurationMs?: number,
+	) => void;
 	onAudioSpanChange?: (id: string, span: Span, trackIndex?: number) => void;
 	onAudioDelete?: (id: string) => void;
+	onAudioDuplicate?: (id: string) => void;
 	selectedAudioId?: string | null;
 	onSelectAudio?: (id: string | null) => void;
 	captionCues: CaptionCue[];
@@ -70,6 +78,9 @@ interface UseTimelineEditorRuntimeParams {
 	isMac: boolean;
 	keyShortcuts: TimelineShortcutBindings;
 	isTimelineFocusedRef: RefObject<boolean>;
+	zoomTimelineIn: () => void;
+	zoomTimelineOut: () => void;
+	fitTimelineRange: () => void;
 }
 
 export function useTimelineEditorRuntime({
@@ -87,6 +98,8 @@ export function useTimelineEditorRuntime({
 	onZoomSuggested,
 	onZoomSpanChange,
 	onZoomDelete,
+	onZoomDeleteMany,
+	onZoomSelectionChange,
 	selectedZoomId,
 	onSelectZoom,
 	trimRegions,
@@ -109,6 +122,7 @@ export function useTimelineEditorRuntime({
 	onAudioAdded,
 	onAudioSpanChange,
 	onAudioDelete,
+	onAudioDuplicate,
 	selectedAudioId,
 	onSelectAudio,
 	captionCues,
@@ -120,13 +134,17 @@ export function useTimelineEditorRuntime({
 	isMac,
 	keyShortcuts,
 	isTimelineFocusedRef,
+	zoomTimelineIn,
+	zoomTimelineOut,
+	fitTimelineRange,
 }: UseTimelineEditorRuntimeParams) {
 	const {
 		keyframes,
 		selectedKeyframeId,
 		setSelectedKeyframeId,
-		selectAllBlocksActive,
-		setSelectAllBlocksActive,
+		multiSelectedZoomIdSet,
+		effectiveSelectedZoomIds,
+		setZoomSelection,
 		hasAnyZoomBlocks,
 		activateSelectAllZooms,
 		addKeyframe,
@@ -157,6 +175,8 @@ export function useTimelineEditorRuntime({
 		selectedAudioId,
 		selectedCaptionId,
 		onZoomDelete,
+		onZoomDeleteMany,
+		onZoomSelectionChange,
 		onClipDelete,
 		onAnnotationDelete,
 		onAudioDelete,
@@ -241,6 +261,11 @@ export function useTimelineEditorRuntime({
 		onAudioAdded,
 	});
 
+	const handleDuplicateSelectedAudio = useCallback(() => {
+		if (!selectedAudioId) return;
+		onAudioDuplicate?.(selectedAudioId);
+	}, [onAudioDuplicate, selectedAudioId]);
+
 	const handleAddAnnotation = useCallback(
 		(trackIndex = 0) => {
 			if (!videoDuration || videoDuration === 0 || totalMs === 0 || !onAnnotationAdded) {
@@ -273,7 +298,7 @@ export function useTimelineEditorRuntime({
 		selectedAnnotationId,
 		selectedAudioId,
 		selectedCaptionId,
-		selectAllBlocksActive,
+		hasZoomMultiSelection: effectiveSelectedZoomIds.length > 0,
 		addKeyframe,
 		handleAddZoom,
 		handleSplitClip,
@@ -285,6 +310,10 @@ export function useTimelineEditorRuntime({
 		deleteSelectedAudio,
 		deleteSelectedCaption,
 		cycleAnnotationsAtCurrentTime,
+		duplicateSelectedAudio: handleDuplicateSelectedAudio,
+		zoomTimelineIn,
+		zoomTimelineOut,
+		fitTimelineRange,
 	});
 
 	useImperativeHandle(
@@ -311,8 +340,10 @@ export function useTimelineEditorRuntime({
 		keyframes,
 		selectedKeyframeId,
 		setSelectedKeyframeId,
-		selectAllBlocksActive,
-		setSelectAllBlocksActive,
+		multiSelectedZoomIdSet,
+		effectiveSelectedZoomIds,
+		setZoomSelection,
+		deleteSelectedZoom,
 		handleKeyframeMove,
 		clearSelectedBlocks,
 		handleSelectZoom,

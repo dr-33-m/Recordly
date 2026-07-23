@@ -16,7 +16,7 @@ interface UseTimelineKeyboardShortcutsParams {
 	selectedAnnotationId?: string | null;
 	selectedAudioId?: string | null;
 	selectedCaptionId?: string | null;
-	selectAllBlocksActive: boolean;
+	hasZoomMultiSelection: boolean;
 	addKeyframe: () => void;
 	handleAddZoom: () => void;
 	handleSplitClip: () => void;
@@ -28,6 +28,10 @@ interface UseTimelineKeyboardShortcutsParams {
 	deleteSelectedAudio: () => void;
 	deleteSelectedCaption: () => void;
 	cycleAnnotationsAtCurrentTime: (backward?: boolean) => boolean;
+	duplicateSelectedAudio: () => void;
+	zoomTimelineIn: () => void;
+	zoomTimelineOut: () => void;
+	fitTimelineRange: () => void;
 }
 
 export function useTimelineKeyboardShortcuts({
@@ -43,7 +47,7 @@ export function useTimelineKeyboardShortcuts({
 	selectedAnnotationId,
 	selectedAudioId,
 	selectedCaptionId,
-	selectAllBlocksActive,
+	hasZoomMultiSelection,
 	addKeyframe,
 	handleAddZoom,
 	handleSplitClip,
@@ -55,6 +59,10 @@ export function useTimelineKeyboardShortcuts({
 	deleteSelectedAudio,
 	deleteSelectedCaption,
 	cycleAnnotationsAtCurrentTime,
+	duplicateSelectedAudio,
+	zoomTimelineIn,
+	zoomTimelineOut,
+	fitTimelineRange,
 }: UseTimelineKeyboardShortcutsParams) {
 	useEffect(() => {
 		const handleKeyDown = (e: KeyboardEvent) => {
@@ -81,6 +89,35 @@ export function useTimelineKeyboardShortcuts({
 				return;
 			}
 
+			// Duplicate the selected audio region (Cmd/Ctrl+D).
+			if (matchesShortcut(e, { key: "d", ctrl: true }, isMac)) {
+				if (selectedAudioId) {
+					e.preventDefault();
+					duplicateSelectedAudio();
+				}
+				return;
+			}
+
+			// View zoom. Bare keys, so skip when a modifier is held (ctrl+= is the
+			// browser/app zoom and ctrl+scroll already handles timeline zoom).
+			if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+				if (e.key === "+" || e.key === "=") {
+					e.preventDefault();
+					zoomTimelineIn();
+					return;
+				}
+				if (e.key === "-" || e.key === "_") {
+					e.preventDefault();
+					zoomTimelineOut();
+					return;
+				}
+				if (e.key === "0") {
+					e.preventDefault();
+					fitTimelineRange();
+					return;
+				}
+			}
+
 			if (matchesShortcut(e, keyShortcuts.addKeyframe, isMac)) addKeyframe();
 			if (matchesShortcut(e, keyShortcuts.addZoom, isMac)) handleAddZoom();
 			if (matchesShortcut(e, keyShortcuts.splitClip, isMac)) handleSplitClip();
@@ -100,7 +137,7 @@ export function useTimelineKeyboardShortcuts({
 				matchesShortcut(e, keyShortcuts.deleteSelected, isMac)
 			) {
 				const target = resolveDeleteSelectionTarget({
-					selectAllBlocksActive,
+					hasZoomMultiSelection,
 					selectedKeyframeId,
 					selectedZoomId,
 					selectedClipId,
@@ -140,14 +177,18 @@ export function useTimelineKeyboardShortcuts({
 		deleteSelectedClip,
 		deleteSelectedKeyframe,
 		deleteSelectedZoom,
+		duplicateSelectedAudio,
+		fitTimelineRange,
 		handleAddAnnotation,
 		handleAddZoom,
 		handleSplitClip,
 		hasAnyZoomBlocks,
 		isMac,
+		zoomTimelineIn,
+		zoomTimelineOut,
 		isTimelineFocusedRef,
 		keyShortcuts,
-		selectAllBlocksActive,
+		hasZoomMultiSelection,
 		selectedAnnotationId,
 		selectedAudioId,
 		selectedCaptionId,
